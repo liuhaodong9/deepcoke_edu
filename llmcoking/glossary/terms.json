@@ -1,0 +1,16 @@
+{
+  "replacement_rules": [
+    {
+      "pattern": "NaCl",
+      "replace": "氯化钠"
+    },
+    {
+      "pattern": "CO2",
+      "replace": "二氧化碳"
+    },
+    {
+      "pattern": "\\\\b%\\\\b",
+      "replace": "百分之"
+    }
+  ]
+}

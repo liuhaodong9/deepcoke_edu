@@ -1,0 +1,44 @@
+# Claude
+.claude/
+CLAUDE.md
+
+# 内部文档
+docs/
+
+# 大文件（通过 GitHub Releases 发布）
+Coal blend paper/
+chromadb_data.tar.gz
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+
+# Node
+node_modules/
+
+# 环境变量
+.env
+.env.local
+.env.*.local
+
+# 编辑器
+.idea/
+.vscode/
+*.sw?
+
+# 数据文件
+llmcoking/src/LLM_back/deepcoke/data/chromadb/
+llmcoking/src/LLM_back/deepcoke/data/bge-base-en-v1.5/
+llmcoking/src/LLM_back/deepcoke/data/papers.db
+
+# 构建产物
+llmcoking/dist/
+
+# 日志
+*.log
+npm-debug.log*
+
+# SQL
+*.sql

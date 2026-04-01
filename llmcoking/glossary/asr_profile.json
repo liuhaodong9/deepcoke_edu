@@ -1,0 +1,67 @@
+{
+  "hotwords": [
+    "焦炭",
+    "焦化",
+    "煤焦油",
+    "炼焦",
+    "配煤",
+    "高炉",
+    "干熄焦",
+    "捣固焦炉",
+    "DeepCoke",
+    "科大讯飞"
+  ],
+  "proper_nouns": {
+    "deep coke": "DeepCoke",
+    "deepcoke": "DeepCoke",
+    "科大巡飞": "科大讯飞"
+  },
+  "asr_confusions": [
+    {
+      "variants": [
+        "焦碳",
+        "焦炭"
+      ],
+      "preferred": "焦炭",
+      "contexts": [
+        "焦化",
+        "炼焦",
+        "高炉",
+        "配煤"
+      ]
+    },
+    {
+      "variants": [
+        "煤交油",
+        "煤焦油"
+      ],
+      "preferred": "煤焦油",
+      "contexts": [
+        "焦化",
+        "副产",
+        "回收"
+      ]
+    },
+    {
+      "variants": [
+        "干吸焦",
+        "干熄焦"
+      ],
+      "preferred": "干熄焦",
+      "contexts": [
+        "焦炉",
+        "余热",
+        "焦化"
+      ]
+    },
+    {
+      "variants": [
+        "交化",
+        "焦化",
+        "胶化"
+      ],
+      "preferred": "焦化",
+      "contexts": []
+    }
+  ]
+}

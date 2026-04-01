@@ -1,0 +1,37 @@
+name: deepcoke
+channels:
+  - defaults
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pip
+  - pip:
+    # FastAPI 后端
+    - fastapi
+    - uvicorn[standard]
+    - sqlalchemy
+    - pymysql
+    - pydantic
+
+    # PDF 处理
+    - PyMuPDF>=1.24.0
+    - pdfplumber>=0.11.0
+
+    # 向量数据库
+    - chromadb>=0.5.5
+    - sentence-transformers>=3.0.0
+
+    # 知识图谱
+    - neo4j>=5.0.0
+
+    # LLM
+    - openai>=1.0.0
+
+    # ESCARGOT 依赖
+    - backoff
+    - dill>=0.3.8
+    - gqlalchemy>=1.5.1
+    - ollama>=0.4.8
+    - raphtory
+
+    # ESCARGOT 本地安装（需手动执行 pip install -e D:\escargot）
