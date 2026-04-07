@@ -81,7 +81,7 @@
 
     <!-- 粒子背景 -->
     <div class="particles">
-      <vue-particles class="login-bg" color="#AEAEAE" linesColor="#AEAEAE" :particlesNumber="150" shapeType="circle" clickMode="repulse" hoverMode="repulse"></vue-particles>
+      <vue-particles class="login-bg" color="#B0B0B8" linesColor="#B0B0B8" :particlesNumber="150" shapeType="circle" clickMode="repulse" hoverMode="repulse"></vue-particles>
     </div>
 
     <!-- 右下角 Logo 和文字 -->
@@ -224,16 +224,17 @@ export default {
 /* ===== 登录/注册卡片 ===== */
 .login_box {
   width: 480px;
-  background: rgba(0, 0, 0, 0.35);
-  backdrop-filter: blur(12px);
+  background: rgba(255, 255, 255, 0.85);
+  backdrop-filter: blur(20px);
   border-radius: 16px;
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  border: 1px solid #D5D5DA;
   padding: 40px 36px 32px;
   position: absolute;
   left: 50%;
   top: 50%;
   transform: translate(17%, -45%);
   z-index: 10;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.08);
 }
 
 /* ===== 标题区域 ===== */
@@ -254,7 +255,7 @@ export default {
 
 .brand-subtitle {
   font-size: 14px;
-  color: rgba(255, 255, 255, 0.55);
+  color: #64748B;
   margin: 0;
   letter-spacing: 2px;
 }
@@ -265,27 +266,27 @@ export default {
   justify-content: center;
   gap: 0;
   margin-bottom: 24px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  border-bottom: 1px solid #D5D5DA;
 
   span {
     flex: 1;
     text-align: center;
     padding: 10px 0;
     font-size: 16px;
-    color: rgba(255, 255, 255, 0.45);
+    color: #94A3B8;
     cursor: pointer;
     transition: all 0.3s;
     border-bottom: 2px solid transparent;
     margin-bottom: -1px;
 
     &.active {
-      color: #fff;
+      color: #1E293B;
       font-weight: 600;
       border-bottom-color: #149efa;
     }
 
     &:hover:not(.active) {
-      color: rgba(255, 255, 255, 0.7);
+      color: #64748B;
     }
   }
 }
@@ -297,24 +298,24 @@ export default {
 
 /* 输入框样式穿透 */
 ::v-deep .el-input__inner {
-  background: rgba(255, 255, 255, 0.08);
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  color: #fff;
+  background: #E8E8ED;
+  border: 1px solid #D5D5DA;
+  color: #1E293B;
   border-radius: 8px;
   height: 42px;
 
   &::placeholder {
-    color: rgba(255, 255, 255, 0.35);
+    color: #94A3B8;
   }
 
   &:focus {
     border-color: #149efa;
-    background: rgba(255, 255, 255, 0.12);
+    background: #F0F0F3;
   }
 }
 
 ::v-deep .el-input__prefix {
-  color: rgba(255, 255, 255, 0.45);
+  color: #94A3B8;
 }
 
 /* 选项行：协议 + 忘记密码 */
@@ -327,7 +328,7 @@ export default {
 
 .user-agreement {
   font-size: 12px;
-  color: rgba(255, 255, 255, 0.55);
+  color: #64748B;
   display: flex;
   align-items: center;
   cursor: pointer;
@@ -338,7 +339,7 @@ export default {
   }
 
   a {
-    color: #409eff;
+    color: #2563EB;
     text-decoration: none;
     margin: 0 2px;
   }
@@ -346,7 +347,7 @@ export default {
 
 .forgot-link {
   font-size: 12px;
-  color: #409eff;
+  color: #2563EB;
   text-decoration: none;
   white-space: nowrap;
 
@@ -380,10 +381,10 @@ export default {
 .switch-link {
   text-align: center;
   font-size: 13px;
-  color: rgba(255, 255, 255, 0.45);
+  color: #64748B;
 
   a {
-    color: #409eff;
+    color: #2563EB;
     text-decoration: none;
     margin-left: 4px;
 
@@ -411,14 +412,14 @@ export default {
 }
 
 .company-text {
-  color: #183452;
+  color: #1E293B;
   font-size: 14px;
   font-weight: bold;
 }
 
 /* 表单验证错误提示 */
 ::v-deep .el-form-item__error {
-  color: #ff6b6b !important;
+  color: #EF4444 !important;
   font-weight: 400 !important;
   font-size: 12px;
 }

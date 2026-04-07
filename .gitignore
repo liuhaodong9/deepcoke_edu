@@ -8,6 +8,7 @@ docs/
 # 大文件（通过 GitHub Releases 发布）
 Coal blend paper/
 chromadb_data.tar.gz
+*.mp4
 
 # Python
 __pycache__/

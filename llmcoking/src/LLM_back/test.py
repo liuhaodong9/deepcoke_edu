@@ -294,3 +294,65 @@ async def get_messages(session_id: str, db: Session = Depends(get_db)):
             chat_history.append({"text": msg.bot_response, "type": "bot"})
 
     return chat_history  # ✅ user 和 bot 按顺序交替返回
+
+
+# ── 人脸识别与主动问候（Mock 接口，后续对接摄像头 + InsightFace）──
+
+# Mock 学生数据库
+_student_db = {
+    "stu_001": {"name": "张同学", "last_topic": "焦炭CRI/CSR指标", "visit_count": 3},
+    "stu_002": {"name": "李同学", "last_topic": "捣固焦工艺", "visit_count": 1},
+}
+
+
+@app.post("/face/recognize")
+async def face_recognize(image_b64: str = ""):
+    """
+    人脸识别接口（Mock）
+    实际部署时：接收摄像头帧 → InsightFace 识别 → 返回学生信息
+    """
+    # Mock: 模拟识别到 stu_001
+    mock_student_id = "stu_001"
+    student = _student_db.get(mock_student_id)
+    if student:
+        return {
+            "status": "recognized",
+            "student_id": mock_student_id,
+            "name": student["name"],
+            "visit_count": student["visit_count"],
+            "last_topic": student["last_topic"],
+            "greeting": f"你好 {student['name']}！欢迎回来，上次我们聊了「{student['last_topic']}」，今天想继续学习还是换个话题？",
+            "note": "当前为模拟模式，未连接摄像头"
+        }
+    return {
+        "status": "new_face",
+        "greeting": "你好！我是 DeepCoke 智能助教，欢迎第一次使用，请问你想了解什么？",
+        "note": "当前为模拟模式，未连接摄像头"
+    }
+
+
+@app.post("/face/register")
+async def face_register(name: str = "", student_id: str = ""):
+    """
+    人脸注册接口（Mock）
+    实际部署时：采集人脸特征 → 存入数据库
+    """
+    new_id = student_id or f"stu_{len(_student_db) + 1:03d}"
+    _student_db[new_id] = {"name": name or "新同学", "last_topic": "", "visit_count": 0}
+    return {
+        "status": "ok",
+        "student_id": new_id,
+        "message": f"已注册学生：{name or '新同学'}（模拟模式）"
+    }
+
+
+# 煤样数据分页查询
+@app.get("/all_coals_page/")
+async def all_coals_page(page: int = 1, page_size: int = 10):
+    """分页查询所有煤样数据，供前端表格展示。"""
+    from deepcoke.coal_agent.coal_db import get_all_coals
+    rows = get_all_coals()
+    total = len(rows)
+    start = (page - 1) * page_size
+    end = start + page_size
+    return {"total": total, "page": page, "page_size": page_size, "data": rows[start:end]}

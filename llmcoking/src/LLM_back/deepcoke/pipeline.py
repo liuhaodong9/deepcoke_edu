@@ -34,26 +34,46 @@ async def process_question(question: str) -> AsyncGenerator[str, None]:
     6. Append follow-up questions
     """
     # ── 进度提示辅助 ─────────────────────────────────────────────
-    # 用 <details> 折叠块实时展示推理链进度，用户可以看到每一步在做什么
-    _progress_lines: list[str] = []
+    # 用 HTML 进度条实时展示推理链进度
+    _progress_steps: list[dict] = []   # [{text, done, pct}]
 
-    def _progress_text() -> str:
-        """将当前进度行拼成一个 <details> 折叠块的 markdown 字符串。"""
-        inner = "\n>\n".join(_progress_lines)
-        return (
-            "<details open>\n"
-            "<summary>推理链路</summary>\n\n"
-            f"> {inner}\n"
-            "</details>\n\n"
-        )
+    def _progress_html() -> str:
+        """将当前进度步骤拼成带进度条的 HTML 块。"""
+        lines = ['<div class="pipeline-progress">']
+        for i, step in enumerate(_progress_steps):
+            icon = '✅' if step.get('done') else '⏳'
+            lines.append(f'<div class="progress-step">{icon} {step["text"]}</div>')
+        # 计算总进度
+        total = len(_progress_steps)
+        done_count = sum(1 for s in _progress_steps if s.get('done'))
+        pct = _progress_steps[-1].get('pct', int(done_count / max(total, 1) * 100)) if _progress_steps else 0
+        is_complete = pct >= 100
+        bar_class = 'progress-bar-complete' if is_complete else ''
+        lines.append(f'<div class="progress-bar-wrap">')
+        lines.append(f'<div class="progress-bar-fill {bar_class}" style="width:{pct}%"></div>')
+        lines.append(f'</div>')
+        if is_complete:
+            lines.append(f'<div class="progress-pct-done">✅ 完成</div>')
+        else:
+            lines.append(f'<div class="progress-pct">{pct}%</div>')
+        lines.append('</div>\n\n')
+        return ''.join(lines)
 
-    def _add_progress(line: str) -> None:
-        _progress_lines.append(line)
+    def _add_progress(text: str, pct: int = 0) -> None:
+        _progress_steps.append({'text': text, 'done': False, 'pct': pct})
+
+    def _finish_last(text: str = None, pct: int = None) -> None:
+        if _progress_steps:
+            _progress_steps[-1]['done'] = True
+            if text:
+                _progress_steps[-1]['text'] = text
+            if pct is not None:
+                _progress_steps[-1]['pct'] = pct
 
     # ── Step 1: Classify ─────────────────────────────────────────
     print(f"[PIPELINE] Step 1: Classifying question: {question[:50]}", flush=True)
-    _add_progress("🔍 **正在分析问题类型…**")
-    yield _progress_text()
+    _add_progress("正在分析问题类型…", pct=5)
+    yield _progress_html()
     await asyncio.sleep(0)
 
     try:
@@ -68,25 +88,66 @@ async def process_question(question: str) -> AsyncGenerator[str, None]:
         "comparison": "对比分析", "causal": "因果推理",
         "recommendation": "方案推荐",
     }
-    _progress_lines[-1] = f"✅ **问题类型：** {type_labels.get(question_type, question_type)}"
+    _finish_last(f"问题类型：{type_labels.get(question_type, question_type)}", pct=10)
     print(f"[PIPELINE] Step 1 done: type={question_type}, needs_rag={needs_rag(question_type)}", flush=True)
 
-    # ── Optimization — 配煤优化 Agent ────────────────────────────
+    # ── 教育版：配煤优化降级为普通问答 ─────────────────────────────
     if question_type == "optimization":
+        print("[PIPELINE] -> edu mode: optimization downgraded to simple chat", flush=True)
+        _finish_last("问题类型：配煤相关（教育版仅支持知识问答）", pct=100)
+        yield _progress_html()
+        yield "\n> 💡 **教育版暂不支持配煤优化计算，已转为知识问答模式。如需配煤优化功能请使用企业版。**\n\n"
+        async for chunk in _simple_chat(question):
+            yield chunk
+        return
+
+    if False and question_type == "optimization":
+        # 以下为配煤优化 Agent 代码（教育版已禁用）
         print("[PIPELINE] -> coal optimization agent", flush=True)
-        _progress_lines[-1] = "✅ **问题类型：** 配煤优化/质量预测"
-        _add_progress("⚙️ **正在调用配煤优化 Agent…**")
-        yield _progress_text()
+        _finish_last("问题类型：配煤优化/质量预测", pct=10)
+        _add_progress("启动配煤优化 Agent…", pct=15)
+        yield _progress_html()
         await asyncio.sleep(0)
 
+        # 用队列接收 agent 的进度回调
+        progress_q: asyncio.Queue = asyncio.Queue()
+
+        def _on_agent_progress(step, total, desc):
+            pct = int(step / total * 100) if total > 0 else 0
+            progress_q.put_nowait((pct, desc))
+
+        # 在线程中运行 agent
+        agent_task = asyncio.get_event_loop().run_in_executor(
+            None, lambda: run_coal_agent(question, on_progress=_on_agent_progress)
+        )
+
+        # 轮询进度队列，实时推送给前端
+        while not agent_task.done():
+            try:
+                pct, desc = await asyncio.wait_for(progress_q.get(), timeout=0.3)
+                # 映射 agent 内部进度到总进度 15%~95%
+                mapped_pct = 15 + int(pct * 0.8)
+                _progress_steps[-1]['text'] = desc
+                _progress_steps[-1]['pct'] = mapped_pct
+                yield _progress_html()
+            except asyncio.TimeoutError:
+                pass
+
+        # 取剩余的进度消息
+        while not progress_q.empty():
+            pct, desc = progress_q.get_nowait()
+            mapped_pct = 15 + int(pct * 0.8)
+            _progress_steps[-1]['text'] = desc
+            _progress_steps[-1]['pct'] = mapped_pct
+
         try:
-            answer = await asyncio.to_thread(run_coal_agent, question)
+            answer = agent_task.result()
         except Exception as e:
             logger.error(f"Coal agent failed: {e}")
             answer = f"配煤优化 Agent 出错: {e}"
 
-        _progress_lines[-1] = "✅ **配煤优化 Agent 完成**"
-        yield _progress_text()
+        _finish_last("配煤优化 Agent 完成", pct=100)
+        yield _progress_html()
         yield "\n---\n\n"
         yield answer
         return
@@ -102,8 +163,8 @@ async def process_question(question: str) -> AsyncGenerator[str, None]:
 
     # ── Step 2: Translate query ──────────────────────────────────
     print("[PIPELINE] Step 2: Translating query...", flush=True)
-    _add_progress("🌐 **正在提取关键词并翻译检索语句…**")
-    yield _progress_text()
+    _add_progress("正在提取关键词并翻译检索语句…", pct=15)
+    yield _progress_html()
     await asyncio.sleep(0)
 
     try:
@@ -114,13 +175,13 @@ async def process_question(question: str) -> AsyncGenerator[str, None]:
         print(f"[PIPELINE] Step 2 FAILED: {e}", flush=True)
         yield f"Pipeline error at translation: {e}"
         return
-    _progress_lines[-1] = f"✅ **关键词：** {', '.join(key_concepts[:5])}"
+    _finish_last(f"关键词：{', '.join(key_concepts[:5])}", pct=25)
     print(f"[PIPELINE] Step 2 done: queries={english_queries}, concepts={key_concepts}", flush=True)
 
     # ── Step 3: Retrieve evidence ────────────────────────────────
     print("[PIPELINE] Step 3: Retrieving from vector DB...", flush=True)
-    _add_progress("📚 **正在检索文献数据库…**")
-    yield _progress_text()
+    _add_progress("正在检索文献数据库…", pct=30)
+    yield _progress_html()
     await asyncio.sleep(0)
 
     all_chunks: list[RetrievedChunk] = []
@@ -140,13 +201,13 @@ async def process_question(question: str) -> AsyncGenerator[str, None]:
         if key not in seen or c.score > seen[key].score:
             seen[key] = c
     all_chunks = sorted(seen.values(), key=lambda x: x.score, reverse=True)[:10]
-    _progress_lines[-1] = f"✅ **检索到 {len(all_chunks)} 条相关文献片段**"
+    _finish_last(f"检索到 {len(all_chunks)} 条相关文献片段", pct=45)
     print(f"[PIPELINE] Step 3 done: {len(all_chunks)} unique chunks", flush=True)
 
     # ── Step 3b: Knowledge graph context ─────────────────────────
     print("[PIPELINE] Step 3b: Querying knowledge graph...", flush=True)
-    _add_progress("🔗 **正在查询知识图谱…**")
-    yield _progress_text()
+    _add_progress("正在查询知识图谱…", pct=50)
+    yield _progress_html()
     await asyncio.sleep(0)
 
     kg_context = ""
@@ -161,18 +222,18 @@ async def process_question(question: str) -> AsyncGenerator[str, None]:
             for r in kg_results[:5]:
                 kg_lines.append(f"- {r.get('title', 'Unknown')} ({r.get('year', '?')}): studies {r.get('concept', '')}")
             kg_context = "\n".join(kg_lines)
-        _progress_lines[-1] = f"✅ **知识图谱：发现 {len(kg_results)} 条关联**"
+        _finish_last(f"知识图谱：发现 {len(kg_results)} 条关联", pct=60)
         print(f"[PIPELINE] Step 3b done: {len(kg_results)} KG results", flush=True)
     except Exception as e:
-        _progress_lines[-1] = "⚠️ **知识图谱：跳过（连接异常）**"
+        _finish_last("知识图谱：跳过（连接异常）", pct=60)
         print(f"[PIPELINE] Step 3b warning (non-fatal): {e}", flush=True)
 
     # ── Step 4: Reasoning (for complex questions) ────────────────
     reasoning_trace = ""
     if is_complex(question_type) and all_chunks:
         print("[PIPELINE] Step 4: Running ESCARGOT reasoning...", flush=True)
-        _add_progress("🧠 **正在进行深度推理（ESCARGOT）…**")
-        yield _progress_text()
+        _add_progress("正在进行深度推理（ESCARGOT）…", pct=65)
+        yield _progress_html()
         await asyncio.sleep(0)
 
         try:
@@ -184,22 +245,22 @@ async def process_question(question: str) -> AsyncGenerator[str, None]:
                 timeout=60,
             )
             if reasoning_trace and "超时" not in reasoning_trace:
-                _progress_lines[-1] = "✅ **深度推理完成**"
+                _finish_last("深度推理完成", pct=85)
                 print(f"[PIPELINE] Step 4 done: {len(reasoning_trace)} chars", flush=True)
             else:
                 reasoning_trace = ""
-                _progress_lines[-1] = "⚠️ **深度推理：超时跳过**"
+                _finish_last("深度推理：超时跳过", pct=85)
                 print("[PIPELINE] Step 4: no reasoning result", flush=True)
         except Exception as e:
-            _progress_lines[-1] = "⚠️ **深度推理：跳过（异常）**"
+            _finish_last("深度推理：跳过（异常）", pct=85)
             print(f"[PIPELINE] Step 4 warning (non-fatal): {e}", flush=True)
             reasoning_trace = ""
     else:
         print(f"[PIPELINE] Step 4: skipped (complex={is_complex(question_type)}, chunks={len(all_chunks)})", flush=True)
 
     # ── Step 4b: Build final thinking block ────────────────────
-    _add_progress("✍️ **正在生成回答…**")
-    yield _progress_text()
+    _add_progress("正在生成回答…", pct=90)
+    yield _progress_html()
     await asyncio.sleep(0)
 
     print("[PIPELINE] Step 4b: Building thinking block...", flush=True)

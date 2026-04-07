@@ -132,6 +132,48 @@ SYSTEM_PROMPT = """你是 DeepCoke 配煤优化智能助手。你可以：
 - 回答使用中文，数据用表格展示"""
 
 
+# ── 结果格式化 ────────────────────────────────────────────────────
+
+def _format_blend_result(result: dict) -> str:
+    """将优化结果格式化为 Markdown 表格。"""
+    hoppers = result.get("hoppers", [])
+    # 过滤掉配比为0的煤种
+    hoppers = [h for h in hoppers if h["ratio"] > 0.1]
+    lines = []
+    lines.append("**配煤方案：**\n")
+    lines.append("| 煤种 | 配比(%) | 重量(g) |")
+    lines.append("|------|---------|---------|")
+    for h in hoppers:
+        lines.append(f"| {h['coal']} | {h['ratio']} | {h['weight_g']} |")
+    lines.append("")
+    lines.append(f"- 总重量：{result.get('total_weight_g', 1000)}g")
+    cost = result.get("cost_per_ton", 0)
+    if cost > 0:
+        lines.append(f"- 吨煤成本：{cost:.1f} 元")
+    lines.append(f"- 优化算法：{result.get('optimizer', '')}")
+    return "\n".join(lines)
+
+
+def _format_predict_result(result: dict) -> str:
+    """将预测结果格式化为 Markdown 表格。"""
+    if "error" in result:
+        return json.dumps(result, ensure_ascii=False)
+    lines = []
+    lines.append("**焦炭质量预测：**\n")
+    lines.append("| 指标 | 预测值 |")
+    lines.append("|------|--------|")
+    for key, val in result.items():
+        if key in ("model", "error"):
+            continue
+        if isinstance(val, (int, float)):
+            lines.append(f"| {key} | {val:.2f} |")
+        else:
+            lines.append(f"| {key} | {val} |")
+    if "model" in result:
+        lines.append(f"\n- 预测模型：{result['model']}")
+    return "\n".join(lines)
+
+
 # ── 工具执行 ──────────────────────────────────────────────────────
 
 def _exec_tool(name: str, args: dict) -> str:
@@ -169,13 +211,13 @@ def _exec_tool(name: str, args: dict) -> str:
         result = optimize_blend(props, coal_names, constraints, total_w)
         if result is None:
             return json.dumps({"error": "无法找到满足约束的配煤方案，请放宽约束条件"}, ensure_ascii=False)
-        return json.dumps(result, ensure_ascii=False)
+        return _format_blend_result(result)
 
     elif name == "predict_quality":
         blend_ratios = args.get("blend_ratios", {})
         model_name = args.get("model_name", "RF")
         result = predictor.predict(blend_ratios, props, model_name)
-        return json.dumps(result, ensure_ascii=False)
+        return _format_predict_result(result)
 
     return json.dumps({"error": f"未知工具: {name}"}, ensure_ascii=False)
 
@@ -199,22 +241,42 @@ def _ollama_chat(messages: list[dict], tools: list | None = None) -> dict:
 
 # ── Agent 主循环 ──────────────────────────────────────────────────
 
-def run_agent(question: str, max_turns: int = 6) -> str:
+_TOOL_LABELS = {
+    "list_coals": "查询可用煤种",
+    "optimize_blend": "优化配煤方案",
+    "predict_quality": "预测焦炭质量",
+}
+
+
+def run_agent(question: str, max_turns: int = 6, on_progress=None) -> str:
     """
     运行配煤优化 Agent，返回最终回答文本。
 
     Args:
         question: 用户问题
         max_turns: 最大工具调用轮次
+        on_progress: 可选回调 on_progress(step, total, description)
     Returns:
         Agent 的最终文本回答
     """
+    def _report(step, total, desc):
+        if on_progress:
+            on_progress(step, total, desc)
+
+    # 预估总步骤：分析意图(1) + 最多 max_turns 轮工具调用(每轮2步：LLM思考+工具执行) + 生成回答(1)
+    # 实际步骤数在运行中动态调整
+    total_steps = 4  # 初始预估：分析→查询煤种→优化→生成回答
+    current_step = 0
+
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": question + " /nothink"},
     ]
 
-    for _ in range(max_turns):
+    current_step += 1
+    _report(current_step, total_steps, "正在分析配煤需求…")
+
+    for turn in range(max_turns):
         try:
             reply = _ollama_chat(messages, tools=TOOLS)
         except Exception as e:
@@ -225,10 +287,16 @@ def run_agent(question: str, max_turns: int = 6) -> str:
         tool_calls = reply.get("tool_calls")
         if not tool_calls:
             # 没有工具调用，返回文本回答
+            current_step = total_steps
+            _report(current_step, total_steps, "正在生成最终回答…")
             return reply.get("content", "")
 
         # 把 assistant 的 tool_calls 消息加入历史
         messages.append(reply)
+
+        # 根据实际工具调用动态更新总步骤数
+        remaining_possible = (max_turns - turn - 1)
+        total_steps = current_step + len(tool_calls) + max(1, remaining_possible) + 1
 
         # 执行每个工具调用
         for tc in tool_calls:
@@ -241,6 +309,10 @@ def run_agent(question: str, max_turns: int = 6) -> str:
                 except json.JSONDecodeError:
                     tool_args = {}
 
+            current_step += 1
+            label = _TOOL_LABELS.get(tool_name, tool_name)
+            _report(current_step, total_steps, f"正在{label}…")
+
             logger.info(f"Tool call: {tool_name}({tool_args})")
             result = _exec_tool(tool_name, tool_args)
 
@@ -250,6 +322,10 @@ def run_agent(question: str, max_turns: int = 6) -> str:
             })
 
     # 超过最大轮次，做一次最终总结
+    current_step += 1
+    total_steps = current_step
+    _report(current_step, total_steps, "正在生成最终回答…")
+
     messages.append({"role": "user", "content": "请根据以上工具调用结果给出最终回答。 /nothink"})
     try:
         reply = _ollama_chat(messages)

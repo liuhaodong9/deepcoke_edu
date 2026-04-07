@@ -15,17 +15,30 @@
             </svg>
           </span>
           DeepCoke
+          <span class="edition-badge">Edu</span>
         </div>
       </div>
       <div class="header-right">
-        <span class="user-name">{{ userName }}</span>
-        <button class="logout-btn" @click="logout">
+        <!-- 已登录：显示用户名 + 退出 -->
+        <template v-if="isLoggedIn">
+          <span class="user-name">{{ userName }}</span>
+          <button class="logout-btn" @click="logout">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
+              <polyline points="16 17 21 12 16 7"/>
+              <line x1="21" y1="12" x2="9" y2="12"/>
+            </svg>
+            退出
+          </button>
+        </template>
+        <!-- 未登录：显示登录按钮 -->
+        <button v-else class="login-btn" @click="goLogin">
           <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
-            <polyline points="16 17 21 12 16 7"/>
-            <line x1="21" y1="12" x2="9" y2="12"/>
+            <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/>
+            <polyline points="10 17 15 12 10 7"/>
+            <line x1="15" y1="12" x2="3" y2="12"/>
           </svg>
-          退出
+          登录
         </button>
       </div>
     </header>
@@ -34,24 +47,30 @@
     <main class="landing-main">
       <!-- Hero 区域 -->
       <section class="hero-section">
-        <div class="hero-badge">AI-Powered Coking Intelligence</div>
+        <div class="hero-badge">
+          <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align: -1px;">
+            <path d="M22 10v6M2 10l10-5 10 5-10 5z"/>
+            <path d="M6 12v5c0 1 4 3 6 3s6-2 6-3v-5"/>
+          </svg>
+          高校教学专用版
+        </div>
         <h1 class="hero-title">Deep<span class="title-accent">Coke</span></h1>
-        <p class="hero-subtitle">智能焦化决策平台</p>
-        <p class="hero-desc">融合配煤优化、数字孪生、知识图谱与智能对话<br/>为焦化全流程提供 AI 驱动的决策支持</p>
+        <p class="hero-subtitle">焦化工艺智能教学实训平台</p>
+        <p class="hero-desc">面向高校冶金、化工、材料等专业<br/>通过 AI 对话式交互学习配煤优化、焦炭质量预测与焦化工艺知识</p>
         <div class="hero-stats">
           <div class="stat-item">
             <span class="stat-value">8</span>
-            <span class="stat-label">预测模型</span>
+            <span class="stat-label">机器学习模型</span>
           </div>
           <div class="stat-divider"></div>
           <div class="stat-item">
             <span class="stat-value">6017</span>
-            <span class="stat-label">知识文档</span>
+            <span class="stat-label">专业文献库</span>
           </div>
           <div class="stat-divider"></div>
           <div class="stat-item">
-            <span class="stat-value">24/7</span>
-            <span class="stat-label">本地部署</span>
+            <span class="stat-value">100%</span>
+            <span class="stat-label">离线可用</span>
           </div>
         </div>
       </section>
@@ -68,7 +87,7 @@
             <div class="card-icon-wrapper" :style="{ background: product.gradient }">
               <i :class="product.icon" class="card-icon"></i>
             </div>
-            <span class="card-status">{{ product.status }}</span>
+            <span class="card-status" :class="{ 'card-status-dev': product.status === '开发中' }">{{ product.status }}</span>
           </div>
           <h3 class="card-title">{{ product.title }}</h3>
           <p class="card-desc">{{ product.desc }}</p>
@@ -84,9 +103,9 @@
           <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
           </svg>
-          开始智能对话
+          开始学习对话
         </button>
-        <p class="cta-hint">输入您的焦化问题，DeepCoke 将自动调用合适的工具为您解答</p>
+        <p class="cta-hint">向 AI 助教提问焦化专业问题，系统将自动检索文献、调用模型为你解答</p>
       </section>
 
       <!-- 示例问题 -->
@@ -97,7 +116,7 @@
             <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/>
             <line x1="12" y1="17" x2="12.01" y2="17"/>
           </svg>
-          您可以这样问
+          试着问这些问题
         </h2>
         <div class="examples-grid">
           <div class="example-item" v-for="(example, idx) in examples" :key="idx" @click="enterChatWithQuestion(example)">
@@ -114,7 +133,7 @@
     <!-- 底部 -->
     <footer class="landing-footer">
       <img class="footer-logo" src="../assets/imgs/CompanyLogo.png" alt="Logo" />
-      <span class="footer-text">苏州龙泰氢一能源科技有限公司</span>
+      <span class="footer-text">苏州龙泰氢一能源科技有限公司 · 高校教学版</span>
     </footer>
   </div>
 </template>
@@ -124,53 +143,60 @@ export default {
   name: 'LandingPage',
   data () {
     return {
-      userName: window.sessionStorage.getItem('nickname') || window.sessionStorage.getItem('username') || 'user',
       products: [
         {
           id: 'blend',
           icon: 'el-icon-s-operation',
-          title: '智能配煤',
-          desc: '基于煤质指标与焦炭质量模型，AI 自动推算最优配煤方案，降低成本、稳定焦炭质量。',
+          title: '配煤优化实训',
+          desc: '输入煤质指标，AI 自动演示多目标优化配煤过程，帮助学生理解配煤原理与成本控制逻辑。',
           gradient: 'linear-gradient(135deg, #1a3a5c 0%, #2a6496 100%)',
-          tags: ['配方优化', '成本控制', '质量预测'],
-          status: '已上线'
+          tags: ['交互式学习', '优化算法', '成本分析'],
+          status: '可体验'
         },
         {
           id: 'twin',
           icon: 'el-icon-monitor',
-          title: '数字孪生',
-          desc: '基于 UE5 构建的焦炉三维温度场可视化系统，实时监控炼焦过程工况与温度分布。',
+          title: '焦炉数字孪生',
+          desc: '基于 UE5 的三维焦炉温度场模拟，学生可直观观察炼焦过程中的热工状态变化。',
           gradient: 'linear-gradient(135deg, #ff8a00 0%, #e06b10 100%)',
-          tags: ['三维可视化', '温度场', '实时监控'],
+          tags: ['三维仿真', '温度场', '过程可视化'],
           status: '开发中'
         },
         {
           id: 'chat',
           icon: 'el-icon-microphone',
-          title: '智能对话',
-          desc: '支持文字与语音交互，理解焦化领域专业问题，调用多种工具综合回答。',
+          title: 'AI 答疑助手',
+          desc: '支持文字与语音提问，覆盖配煤、炼焦、煤化学等知识点，即时获得专业解答。',
           gradient: 'linear-gradient(135deg, #149efa 0%, #0d6efd 100%)',
-          tags: ['语音识别', '多轮对话', '工具调度'],
-          status: '已上线'
+          tags: ['智能问答', '语音交互', '即时反馈'],
+          status: '可体验'
         },
         {
           id: 'knowledge',
           icon: 'el-icon-notebook-2',
-          title: '知识图谱',
-          desc: '基于焦化文献构建的专业知识库，回答附带文献来源引用，确保可溯源。',
+          title: '专业文献库',
+          desc: '收录 6000+ 篇焦化领域文献，AI 自动检索并引用原文出处，辅助学生文献调研与论文写作。',
           gradient: 'linear-gradient(135deg, #1a5c3a 0%, #28a06a 100%)',
-          tags: ['文献检索', '知识问答', '来源引用'],
-          status: '已上线'
+          tags: ['文献检索', 'RAG 问答', '来源溯源'],
+          status: '可体验'
         }
       ],
       examples: [
-        '这批煤灰分12%、挥发分28%，如何配煤？',
-        '焦炉温度场异常，可能的原因有哪些？',
-        '配煤中肥煤比例过高会怎样？',
-        '查看当前焦炉实时温度分布',
-        '关于捣固焦工艺的文献有哪些？',
-        '如何降低焦炭灰分同时保证强度？'
+        '配煤中肥煤比例过高会对焦炭质量产生什么影响？',
+        '什么是焦炭的CRI和CSR指标？它们的关系是什么？',
+        '灰分12%、挥发分28%的煤，帮我设计一个配煤方案',
+        '焦炉温度场不均匀的原因和调节方法有哪些？',
+        '捣固焦与顶装焦工艺的区别是什么？',
+        '如何通过调整配煤比降低焦炭灰分同时保证强度？'
       ]
+    }
+  },
+  computed: {
+    isLoggedIn () {
+      return !!window.sessionStorage.getItem('token')
+    },
+    userName () {
+      return window.sessionStorage.getItem('nickname') || window.sessionStorage.getItem('username') || ''
     }
   },
   methods: {
@@ -184,9 +210,14 @@ export default {
         query: { q: question }
       })
     },
+    goLogin () {
+      this.$router.push('/login')
+    },
     logout () {
       window.sessionStorage.removeItem('token')
-      this.$router.push('/login')
+      window.sessionStorage.removeItem('username')
+      window.sessionStorage.removeItem('nickname')
+      this.$router.go(0)
     }
   }
 }
@@ -195,12 +226,12 @@ export default {
 <style lang="less" scoped>
 @primary: #149efa;
 @accent: #ff8a00;
-@bg-deep: #050a14;
-@bg-card: rgba(255, 255, 255, 0.03);
-@border-subtle: rgba(255, 255, 255, 0.08);
-@text-primary: #f0f2f5;
-@text-secondary: rgba(255, 255, 255, 0.55);
-@text-muted: rgba(255, 255, 255, 0.35);
+@bg-deep: #E8E8ED;
+@bg-card: rgba(0, 0, 0, 0.02);
+@border-subtle: #D5D5DA;
+@text-primary: #1E293B;
+@text-secondary: #64748B;
+@text-muted: #94A3B8;
 
 .landing-container {
   min-height: 100vh;
@@ -215,8 +246,8 @@ export default {
   position: fixed;
   inset: 0;
   background-image:
-    linear-gradient(rgba(255,255,255,0.02) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(255,255,255,0.02) 1px, transparent 1px);
+    linear-gradient(rgba(0,0,0,0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0,0,0,0.03) 1px, transparent 1px);
   background-size: 60px 60px;
   z-index: 0;
 }
@@ -233,7 +264,7 @@ export default {
 .orb-1 {
   width: 500px;
   height: 500px;
-  background: rgba(20, 158, 250, 0.08);
+  background: rgba(20, 158, 250, 0.06);
   top: -100px;
   right: -100px;
 }
@@ -241,26 +272,27 @@ export default {
 .orb-2 {
   width: 400px;
   height: 400px;
-  background: rgba(255, 138, 0, 0.06);
+  background: rgba(255, 138, 0, 0.04);
   bottom: -50px;
   left: -100px;
 }
 
-/* 顶部导航 */
+/* 顶部导航 — Apple 风格全宽薄条 */
 .landing-header {
   position: fixed;
-  top: 16px;
-  left: 24px;
-  right: 24px;
+  top: 0;
+  left: 0;
+  right: 0;
   z-index: 100;
+  height: 44px;
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 12px 24px;
-  background: rgba(5, 10, 20, 0.7);
-  backdrop-filter: blur(20px);
-  border: 1px solid @border-subtle;
-  border-radius: 14px;
+  padding: 0 24px;
+  background: rgba(246, 246, 248, 0.72);
+  backdrop-filter: saturate(180%) blur(20px);
+  -webkit-backdrop-filter: saturate(180%) blur(20px);
+  border-bottom: 0.5px solid rgba(0, 0, 0, 0.08);
 }
 
 .header-left {
@@ -270,53 +302,69 @@ export default {
 
 .header-logo {
   font-family: 'Orbitron', 'Fira Code', monospace;
-  font-size: 20px;
-  font-weight: bold;
+  font-size: 15px;
+  font-weight: 700;
   color: @text-primary;
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 7px;
 }
 
 .logo-icon {
-  width: 32px;
-  height: 32px;
-  border-radius: 8px;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
   background: linear-gradient(135deg, @accent, @primary);
   display: flex;
   align-items: center;
   justify-content: center;
   color: #fff;
+
+  svg {
+    width: 12px;
+    height: 12px;
+  }
+}
+
+.edition-badge {
+  font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+  font-size: 10px;
+  font-weight: 600;
+  color: @primary;
+  background: rgba(20, 158, 250, 0.1);
+  padding: 1px 6px;
+  border-radius: 4px;
+  letter-spacing: 0.5px;
+  margin-left: 2px;
 }
 
 .header-right {
   display: flex;
   align-items: center;
-  gap: 16px;
+  gap: 12px;
 }
 
 .user-name {
-  color: @text-secondary;
-  font-size: 13px;
+  color: @text-muted;
+  font-size: 12px;
 }
 
-.logout-btn {
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid @border-subtle;
-  color: @text-secondary;
-  font-size: 13px;
-  border-radius: 8px;
-  padding: 6px 14px;
+.logout-btn,
+.login-btn {
+  background: transparent;
+  border: none;
+  color: @text-muted;
+  font-size: 12px;
+  border-radius: 6px;
+  padding: 4px 8px;
   cursor: pointer;
-  transition: all 0.2s;
+  transition: color 0.2s;
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
 
   &:hover {
-    background: rgba(255, 255, 255, 0.1);
     color: @text-primary;
-    border-color: rgba(255, 255, 255, 0.2);
   }
 }
 
@@ -326,7 +374,7 @@ export default {
   z-index: 1;
   max-width: 1060px;
   margin: 0 auto;
-  padding: 110px 32px 40px;
+  padding: 80px 32px 40px;
 }
 
 /* Hero 区域 */
@@ -336,16 +384,18 @@ export default {
 }
 
 .hero-badge {
-  display: inline-block;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   padding: 5px 16px;
   font-size: 12px;
-  font-family: 'Fira Code', monospace;
   color: @primary;
   background: rgba(20, 158, 250, 0.08);
   border: 1px solid rgba(20, 158, 250, 0.2);
   border-radius: 20px;
   margin-bottom: 24px;
-  letter-spacing: 0.5px;
+  letter-spacing: 1px;
+  font-weight: 500;
 }
 
 .hero-title {
@@ -425,18 +475,17 @@ export default {
 }
 
 .product-card {
-  background: @bg-card;
-  border: 1px solid @border-subtle;
+  background: #F0F0F3;
+  border: 1px solid #D5D5DA;
   border-radius: 16px;
   padding: 24px 20px;
   transition: all 0.25s ease;
   cursor: pointer;
 
   &:hover {
-    background: rgba(255, 255, 255, 0.06);
-    border-color: rgba(255, 255, 255, 0.15);
+    border-color: #C5C5CC;
     transform: translateY(-4px);
-    box-shadow: 0 16px 48px rgba(0, 0, 0, 0.4);
+    box-shadow: 0 16px 48px rgba(0, 0, 0, 0.08);
   }
 }
 
@@ -465,9 +514,14 @@ export default {
   font-size: 11px;
   padding: 2px 8px;
   border-radius: 4px;
-  background: rgba(34, 197, 94, 0.1);
-  color: #22c55e;
+  background: rgba(20, 158, 250, 0.08);
+  color: @primary;
   font-family: 'Fira Code', monospace;
+}
+
+.card-status-dev {
+  background: rgba(255, 138, 0, 0.08);
+  color: @accent;
 }
 
 .card-title {
@@ -494,8 +548,8 @@ export default {
   font-size: 11px;
   font-family: 'Fira Code', monospace;
   color: @text-muted;
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(0, 0, 0, 0.03);
+  border: 1px solid #D5D5DA;
   padding: 2px 8px;
   border-radius: 4px;
 }
@@ -519,11 +573,11 @@ export default {
   border-radius: 12px;
   cursor: pointer;
   transition: all 0.25s ease;
-  box-shadow: 0 4px 24px rgba(20, 158, 250, 0.25);
+  box-shadow: 0 4px 24px rgba(20, 158, 250, 0.15);
 
   &:hover {
     transform: translateY(-2px);
-    box-shadow: 0 8px 32px rgba(20, 158, 250, 0.35);
+    box-shadow: 0 8px 32px rgba(20, 158, 250, 0.25);
   }
 
   &:active {
@@ -577,9 +631,9 @@ export default {
   transition: all 0.2s ease;
 
   &:hover {
-    background: rgba(255, 255, 255, 0.06);
+    background: rgba(0, 0, 0, 0.04);
     color: @text-primary;
-    border-color: rgba(255, 255, 255, 0.15);
+    border-color: #C5C5CC;
 
     .example-arrow {
       color: @accent;

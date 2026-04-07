@@ -117,20 +117,26 @@ export default {
       voiceMode: false,
       recognition: null,
       quickQuestions: [
-        { icon: '⚗', main: '优化配煤方案', sub: '基于煤质指标自动推算', text: '帮我优化一个配煤方案' },
-        { icon: '📊', main: '预测焦炭质量', sub: '灰分、硫分、强度预测', text: '预测这批煤的焦炭质量' },
         { icon: '📚', main: '查阅焦化文献', sub: '6000+ 篇专业知识库', text: '关于捣固焦工艺的文献有哪些？' },
-        { icon: '🔧', main: '工艺问题诊断', sub: '温度场异常分析', text: '焦炉温度场异常，可能的原因有哪些？' }
+        { icon: '🔬', main: '焦炭质量指标', sub: 'CRI、CSR等概念详解', text: '什么是焦炭的CRI和CSR指标？它们的关系是什么？' },
+        { icon: '🔧', main: '工艺问题学习', sub: '炼焦工艺原理', text: '捣固焦与顶装焦工艺的区别是什么？' },
+        { icon: '🧪', main: '煤化学知识', sub: '煤质分析基础', text: '煤的灰分、挥发分和粘结指数分别代表什么？' }
       ]
     }
   },
   methods: {
     renderMarkdown (text) {
-      const detailsPlaceholders = []
-      let preprocessed = text.replace(/<\/?(?:details|summary)[^>]*>/gi, (match) => {
-        const idx = detailsPlaceholders.length
-        detailsPlaceholders.push(match)
-        return `__DETAILS_PH_${idx}__`
+      // 保护进度条 HTML 和 details 标签不被转义
+      const htmlPlaceholders = []
+      let preprocessed = text.replace(/<div class="pipeline-progress">[\s\S]*?progress-pct[^>]*>[\s\S]*?<\/div>\s*<\/div>/gi, (match) => {
+        const idx = htmlPlaceholders.length
+        htmlPlaceholders.push(match)
+        return `__HTML_PH_${idx}__`
+      })
+      preprocessed = preprocessed.replace(/<\/?(?:details|summary)[^>]*>/gi, (match) => {
+        const idx = htmlPlaceholders.length
+        htmlPlaceholders.push(match)
+        return `__HTML_PH_${idx}__`
       })
 
       preprocessed = preprocessed
@@ -139,8 +145,8 @@ export default {
         .replace(/</g, '&lt;')
         .replace(/>/g, '&gt;')
 
-      preprocessed = preprocessed.replace(/__DETAILS_PH_(\d+)__/g, (_, idx) => {
-        return detailsPlaceholders[parseInt(idx)]
+      preprocessed = preprocessed.replace(/__HTML_PH_(\d+)__/g, (_, idx) => {
+        return htmlPlaceholders[parseInt(idx)]
       })
 
       preprocessed = preprocessed
@@ -267,7 +273,7 @@ export default {
           if (done) break
           const chunk = decoder.decode(value, { stream: true })
 
-          if (chunk.includes('<details open>') && chunk.includes('推理链路')) {
+          if (chunk.includes('pipeline-progress')) {
             progressBlock = chunk
             botMessage.text = progressBlock
           } else {
@@ -344,15 +350,15 @@ export default {
 .chat-wrapper {
   display: flex;
   flex-direction: column;
-  height: 100vh;
-  background: #0f0f0f;
+  height: 100%;
+  background: #E8E8ED;
 }
 
 /* ===== 消息滚动区 ===== */
 .chat-scroll {
   flex: 1;
   overflow-y: auto;
-  padding-top: 56px;
+  padding-top: 12px;
 }
 
 .chat-scroll::-webkit-scrollbar {
@@ -360,12 +366,12 @@ export default {
 }
 
 .chat-scroll::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.06);
+  background: rgba(0, 0, 0, 0.08);
   border-radius: 3px;
 }
 
 .chat-scroll::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.12);
+  background: rgba(0, 0, 0, 0.15);
 }
 
 .chat-content {
@@ -402,7 +408,7 @@ export default {
 
 .welcome-title {
   font-size: 22px;
-  color: #e0e0e0;
+  color: #1E293B;
   font-weight: 500;
   margin: 0 0 28px;
 }
@@ -420,16 +426,16 @@ export default {
   align-items: flex-start;
   gap: 12px;
   padding: 14px 16px;
-  background: rgba(255, 255, 255, 0.03);
-  border: 1px solid rgba(255, 255, 255, 0.07);
+  background: #F0F0F3;
+  border: 1px solid #D5D5DA;
   border-radius: 12px;
   cursor: pointer;
   transition: all 0.2s;
 }
 
 .quick-item:hover {
-  background: rgba(255, 255, 255, 0.06);
-  border-color: rgba(255, 255, 255, 0.14);
+  background: #E0E0E5;
+  border-color: #CBD5E1;
 }
 
 .quick-icon {
@@ -446,13 +452,13 @@ export default {
 
 .quick-main {
   font-size: 13px;
-  color: #d0d0d0;
+  color: #475569;
   font-weight: 500;
 }
 
 .quick-sub {
   font-size: 12px;
-  color: rgba(255, 255, 255, 0.3);
+  color: #94A3B8;
 }
 
 /* ===== 消息行 ===== */
@@ -500,38 +506,38 @@ export default {
 }
 
 .message-row.bot .message-bubble {
-  color: #d4d4d4;
+  color: #334155;
   padding: 0;
 }
 
 .message-row.user .message-bubble {
-  background: #1a3a5c;
-  color: #e0e0e0;
+  background: #EFF6FF;
+  color: #1E293B;
   padding: 12px 18px;
   border-radius: 18px 18px 4px 18px;
-  border: 1px solid rgba(20, 158, 250, 0.15);
+  border: 1px solid rgba(20, 158, 250, 0.2);
 }
 
 /* ===== Markdown 内容样式 ===== */
 .message-bubble span { word-break: break-word; }
 
-::v-deep .message-bubble h1 { font-size: 20px; font-weight: 600; color: #f0f0f0; margin: 16px 0 8px; }
-::v-deep .message-bubble h2 { font-size: 18px; font-weight: 600; color: #f0f0f0; margin: 14px 0 6px; }
-::v-deep .message-bubble h3 { font-size: 16px; font-weight: 600; color: #f0f0f0; margin: 12px 0 4px; }
+::v-deep .message-bubble h1 { font-size: 20px; font-weight: 600; color: #1E293B; margin: 16px 0 8px; }
+::v-deep .message-bubble h2 { font-size: 18px; font-weight: 600; color: #1E293B; margin: 14px 0 6px; }
+::v-deep .message-bubble h3 { font-size: 16px; font-weight: 600; color: #1E293B; margin: 12px 0 4px; }
 ::v-deep .message-bubble p { margin: 8px 0; }
 ::v-deep .message-bubble ul,
 ::v-deep .message-bubble ol { padding-left: 20px; margin: 8px 0; }
 ::v-deep .message-bubble code {
-  background: rgba(255, 255, 255, 0.07);
+  background: #E0E0E5;
   padding: 2px 6px;
   border-radius: 4px;
   font-size: 13px;
   font-family: 'Fira Code', monospace;
-  color: #e8ab6a;
+  color: #C2410C;
 }
 ::v-deep .message-bubble pre {
-  background: #0a0a0a;
-  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: #E8E8ED;
+  border: 1px solid #D5D5DA;
   border-radius: 10px;
   padding: 14px;
   margin: 10px 0;
@@ -540,9 +546,9 @@ export default {
 ::v-deep .message-bubble pre code {
   background: transparent;
   padding: 0;
-  color: #d4d4d4;
+  color: #334155;
 }
-::v-deep .message-bubble a { color: #58a6ff; }
+::v-deep .message-bubble a { color: #2563EB; }
 ::v-deep .message-bubble table {
   border-collapse: collapse;
   margin: 10px 0;
@@ -550,18 +556,18 @@ export default {
 }
 ::v-deep .message-bubble th,
 ::v-deep .message-bubble td {
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  border: 1px solid #D5D5DA;
   padding: 8px 12px;
   text-align: left;
 }
 ::v-deep .message-bubble th {
-  background: rgba(255, 255, 255, 0.04);
-  color: #e0e0e0;
+  background: #E0E0E5;
+  color: #334155;
 }
 
 /* ===== 推理过程折叠块 ===== */
 ::v-deep .message-bubble details {
-  background: rgba(20, 158, 250, 0.04);
+  background: rgba(20, 158, 250, 0.05);
   border: 1px solid rgba(20, 158, 250, 0.12);
   border-radius: 10px;
   padding: 10px 14px;
@@ -569,12 +575,12 @@ export default {
 }
 ::v-deep .message-bubble details summary {
   cursor: pointer;
-  color: #7eb8f7;
+  color: #2563EB;
   font-size: 14px;
   user-select: none;
 }
 ::v-deep .message-bubble details summary:hover {
-  color: #58a6ff;
+  color: #1D4ED8;
 }
 ::v-deep .message-bubble details[open] summary {
   margin-bottom: 8px;
@@ -584,7 +590,7 @@ export default {
 ::v-deep .message-bubble details p,
 ::v-deep .message-bubble details li {
   font-size: 13px;
-  color: #9a9a9a;
+  color: #64748B;
 }
 
 /* ===== 加载动画 ===== */
@@ -598,7 +604,7 @@ export default {
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: #444;
+  background: #94A3B8;
   animation: dots 1.4s infinite ease-in-out;
 }
 
@@ -625,8 +631,8 @@ export default {
   display: flex;
   align-items: flex-end;
   gap: 4px;
-  background: #1a1a1a;
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: #F0F0F3;
+  border: 1px solid #D5D5DA;
   border-radius: 20px;
   padding: 8px 8px 8px 4px;
   transition: border-color 0.2s;
@@ -652,11 +658,11 @@ export default {
   font-size: 15px;
   line-height: 1.5;
   background: transparent !important;
-  color: #e0e0e0;
+  color: #334155;
 }
 
 ::v-deep .el-textarea__inner::placeholder {
-  color: #555;
+  color: #94A3B8;
 }
 
 ::v-deep .el-textarea__inner:focus {
@@ -671,7 +677,7 @@ export default {
   border: none;
   border-radius: 8px;
   background: transparent;
-  color: #666;
+  color: #94A3B8;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -681,8 +687,8 @@ export default {
 }
 
 .input-icon-btn:hover {
-  background: rgba(255, 255, 255, 0.06);
-  color: #aaa;
+  background: #E0E0E5;
+  color: #475569;
 }
 
 .input-icon-btn.active {
@@ -696,8 +702,8 @@ export default {
   height: 34px;
   border: none;
   border-radius: 50%;
-  background: #2a2a2a;
-  color: #555;
+  background: #E0E0E5;
+  color: #94A3B8;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -721,7 +727,60 @@ export default {
 .input-footer {
   text-align: center;
   font-size: 12px;
-  color: #444;
+  color: #94A3B8;
   padding-top: 8px;
+}
+</style>
+
+<style>
+/* 进度条样式（不能 scoped，因为是 v-html 注入） */
+.pipeline-progress {
+  background: #F0F0F3;
+  border: 1px solid #D5D5DA;
+  border-radius: 10px;
+  padding: 14px 16px 12px;
+  margin-bottom: 8px;
+  font-size: 13px;
+}
+
+.progress-step {
+  color: #475569;
+  padding: 3px 0;
+  line-height: 1.6;
+}
+
+.progress-bar-wrap {
+  margin-top: 10px;
+  height: 6px;
+  background: #DDDDE2;
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.progress-bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #149efa, #3db2ff);
+  border-radius: 3px;
+  transition: width 0.4s ease;
+}
+
+.progress-bar-complete {
+  background: linear-gradient(90deg, #22c55e, #4ade80) !important;
+}
+
+.progress-pct {
+  text-align: right;
+  font-size: 12px;
+  color: #94A3B8;
+  margin-top: 4px;
+  font-family: 'Fira Code', monospace;
+}
+
+.progress-pct-done {
+  text-align: right;
+  font-size: 12px;
+  color: #22c55e;
+  margin-top: 4px;
+  font-weight: 500;
 }
 </style>

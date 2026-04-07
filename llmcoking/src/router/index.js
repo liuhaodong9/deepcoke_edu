@@ -13,7 +13,7 @@ Vue.use(VueRouter)
 const router = new VueRouter({
   mode: 'hash', // 使用 hash 模式
   routes: [
-    { path: '/', redirect: '/login' }, // 根路径重定向到登录页面
+    { path: '/', redirect: '/landing' }, // 根路径重定向到产品主页
     { path: '/login', name: 'Login', component: LoginPage }, // 登录页面路由
     { path: '/landing', name: 'Landing', component: LandingPage }, // 产品主页
     {
