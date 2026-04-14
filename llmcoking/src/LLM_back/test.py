@@ -15,7 +15,7 @@ from pydantic import BaseModel
 import hashlib
 
 # ── DeepCoke Pipeline ──────────────────────────────────────────────
-from deepcoke.pipeline import process_question
+from deepcoke.pipeline_graph import process_question  # LangGraph 版 pipeline
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("deepcoke")
