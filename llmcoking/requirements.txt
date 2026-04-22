@@ -30,6 +30,9 @@ pdfplumber>=0.11
 # 知识图谱（可选）
 neo4j>=5.0
 
+# Pipeline 调度（LangGraph）
+langgraph>=1.1
+
 # 工具
 pydantic>=2.0
 python-dotenv>=1.0

@@ -567,6 +567,25 @@ async def ws_duplex(websocket: WebSocket):
         "info": "Send continuous PCM audio as binary frames. Server handles VAD.",
     })
 
+    # 进入即念欢迎语：字幕（llm_delta/llm_done）+ 豆包 TTS（tts_audio）
+    greeting = "您好！我是焦化大语言智能问答与分析系统DeepCoke，有什么可以帮助你的？"
+    try:
+        await session.send({"type": "state", "state": "speaking"})
+        await session.send({"type": "llm_delta", "text": greeting})
+        res = await asyncio.to_thread(session._tts.synth, greeting)
+        if res and getattr(res, "wav_bytes", None):
+            enc = (settings.DOUBAO_TTS_ENCODING or "mp3").strip().lower()
+            mime = "audio/mpeg" if enc == "mp3" else f"audio/{enc}"
+            await session.send({
+                "type": "tts_audio",
+                "audio_b64": base64.b64encode(res.wav_bytes).decode("ascii"),
+                "mime": mime,
+            })
+        await session.send({"type": "llm_done"})
+        await session.send({"type": "state", "state": "idle"})
+    except Exception as e:
+        logger.warning("greeting failed: %s", e)
+
     # Start background workers
     processor_task = asyncio.create_task(session.audio_processor())
     tts_task = asyncio.create_task(session.tts_worker())
