@@ -110,6 +110,21 @@ pip install "ctranslate2==4.4.0" "faster-whisper==1.0.3" "setuptools<80"
 - `cryptography 42` 避免 `_rust` DLL 加载失败(MySQL 认证需要)。
 - `ctranslate2 4.4 + faster-whisper 1.0.3 + setuptools<80` 为一组,避开 `pkg_resources` 被 setuptools 82 移除导致的 ImportError。
 
+### 装 Silero VAD(必装,否则语音连线会超时崩)
+
+语音后端 `SileroVAD` 找不到 pip 包会回退到 `torch.hub.load("snakers4/silero-vad")`,国内/离线机器访问 GitHub 必超时,客户端连 `/ws/duplex` 时 uvicorn 会报 `WinError 10060`,每连必炸。
+
+```bash
+pip install silero-vad
+# 校验(打印模型对象即通过)
+python -c "from silero_vad import load_silero_vad; load_silero_vad(); print('ok')"
+```
+
+最新的 `environment.yml` 已把它列为默认依赖。老环境一条命令同步:
+```bash
+conda env update -f llmcoking/environment.yml --prune
+```
+
 ### 可选: 配煤 Agent 的预训练模型
 
 `coal_agent/` 下的 `*.pkl` (sklearn 1.7.2 训练的焦炭质量预测模型) 已包含在仓库中,直接可用。
@@ -367,44 +382,6 @@ A: 按顺序排查:
   2. 终端 2 (语音后端) 日志里有没有 `greeting failed` 一行
   3. `.env` 的 `DOUBAO_TTS_APP_ID` / `ACCESS_KEY` 是否填了
   4. 点一下页面任意位置,绕过浏览器 autoplay 限制
-
-**Q: 客户端连 `/ws/duplex` 时报 `WinError 10060` / `torch.hub` 拉 GitHub 超时**
-A: 报错链大致长这样:
-```
-TimeoutError: [WinError 10060] 由于连接方在一段时间后没有正确答复...
-urllib.error.URLError: <urlopen error [WinError 10060] ...>
-RuntimeError: It looks like there is no internet connection and the repo could not be found
-  File "app/services/vad_service.py", line 35, in _load
-    torch.hub.load(repo_or_dir="snakers4/silero-vad", ...)
-ERROR: Exception in ASGI application
-```
-根因: `SileroVAD._load()` 没找到 `silero-vad` pip 包,回退到 `torch.hub.load("snakers4/silero-vad", ...)`,这一步要访问 GitHub,国内/离线机器必超时。每次 WebSocket 新连接都会重走 `DuplexSession.__init__` → `SileroVAD()` → `_load()`,所以看起来"每连必炸"。
-
-三种修复,任选其一:
-
-1. **推荐: 装 `silero-vad` pip 包**(零网络依赖)
-   ```bash
-   conda activate deepcoke
-   pip install silero-vad
-   # 校验
-   python -c "from silero_vad import load_silero_vad; load_silero_vad(); print('ok')"
-   ```
-   最新的 `environment.yml` 已把它列为默认依赖,老环境更新一次即可:
-   ```bash
-   conda env update -f llmcoking/environment.yml --prune
-   ```
-
-2. **预热 torch.hub 缓存**(保留原逻辑)
-   在能访问 GitHub 的机器上执行:
-   ```bash
-   python -c "import torch; torch.hub.load('snakers4/silero-vad', 'silero_vad', trust_repo=True)"
-   ```
-   缓存在 `C:\Users\<你>\.cache\torch\hub\snakers4_silero-vad_master\`,整目录拷到目标机器同样路径即可。
-
-3. **离线机器手动放仓库**
-   - 下载 https://github.com/snakers4/silero-vad 的 master zip
-   - 解压为 `C:\Users\<你>\.cache\torch\hub\snakers4_silero-vad_master\`
-   - 确认目录里有 `hubconf.py`
 
 ## 架构
 
