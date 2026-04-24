@@ -25,12 +25,13 @@
 6. [MySQL 建库](#mysql-建库)
 7. [Ollama 拉取本地 LLM](#ollama-拉取本地-llm)
 8. [RAG 向量库数据](#rag-向量库数据)
-9. [语音后端配置(可选)](#语音后端配置可选)
-10. [启动三个服务](#启动三个服务)
-11. [首次使用](#首次使用)
-12. [常见问题](#常见问题)
-13. [架构](#架构)
-14. [目录结构](#目录结构)
+9. [Neo4j 知识图谱(可选)](#neo4j-知识图谱可选)
+10. [语音后端配置(可选)](#语音后端配置可选)
+11. [启动三个服务](#启动三个服务)
+12. [首次使用](#首次使用)
+13. [常见问题](#常见问题)
+14. [架构](#架构)
+15. [目录结构](#目录结构)
 
 ---
 
@@ -222,6 +223,55 @@ python fast_ingest.py
 ### 不配 RAG 数据?
 
 RAG 数据缺失不影响其他 Agent。Supervisor 路由到 `knowledge_qa` 的问题会返回"检索结果为空"。文本问答的其他类别(闲聊/配煤/煤价等)都能正常工作。
+
+## Neo4j 知识图谱(可选)
+
+`knowledge_qa` 路线在向量检索后会再走一步 `kg_lookup`,从 Neo4j 取关联论文(`pipeline_graph.py:239`)。这一步上层包了 `try/except`,失败会被兜底 —— 日志里会有 `[kg_lookup] non-fatal: ...`,进度条改成"知识图谱:跳过(连接异常)",pipeline 仍然正常跑完打印 `=== COMPLETE ===`,**但这次问答没有知识图谱补充数据**。也就是说:即使你看到"完成",如果伴随 Neo4j 报错,回答质量是降级的。
+
+### 默认连接参数(`deepcoke/config.py`)
+
+```python
+NEO4J_URI      = "bolt://localhost:7687"
+NEO4J_USER     = "neo4j"
+NEO4J_PASSWORD = "deepcoke2024"
+```
+
+可用环境变量 `NEO4J_URI` / `NEO4J_USER` / `NEO4J_PASSWORD` 覆盖。
+
+### 路径 A:不装 Neo4j(最省事)
+
+什么都不做。启动时每个 knowledge_qa 问题会在日志里报一次连接失败,然后走兜底路径出答案。只丢失"关联论文"增强,其余功能完好。
+
+### 路径 B:装 Neo4j 并对齐密码
+
+1. 下载 Neo4j Desktop 或 Community Server: https://neo4j.com/download/
+2. 启动 Neo4j,首次登录会强制改密码,**改成 `deepcoke2024`** (或任意密码,然后在启动后端前 `set NEO4J_PASSWORD=你的密码`)
+3. 浏览器打开 http://localhost:7474 能登录即 OK
+4. 往图里灌数据(可选):
+   ```bash
+   cd llmcoking/src/LLM_back
+   python -m deepcoke.knowledge_graph.import_entities
+   ```
+
+### Neo4j 报错处理
+
+启动后端后第一次 knowledge_qa 问答,如果后端日志出现:
+
+```
+Neo.ClientError.Security.Unauthorized — The client is unauthorized due to authentication failure.
+...(几次重试后)...
+Neo.ClientError.Security.AuthenticationRateLimit — The client has provided incorrect authentication details too many times in a row.
+```
+
+意味着:
+- `Unauthorized`:密码对不上,走上面**路径 B**对齐密码,或改用**路径 A**不装。
+- `AuthenticationRateLimit`:Neo4j 把这个客户端 IP 暂时拉黑了。**改对密码也不会立刻生效**,必须二选一:
+  1. 等 5~30 分钟限流窗口过期
+  2. 重启 Neo4j 服务清除限流状态
+      - Desktop:点停止 → 再点启动
+      - Community Server:`neo4j restart`(Linux/Mac)或在服务管理器重启 Neo4j 服务(Windows)
+
+> **防坑提示**:改密码和重启 Neo4j 之后,**要同时重启文本后端**(终端 1 那个 `uvicorn test:app`),否则进程内缓存的 driver 会继续用老密码打,又把自己撞进限流。
 
 ## 语音后端配置(可选)
 
