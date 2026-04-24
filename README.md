@@ -276,6 +276,40 @@ Neo.ClientError.Security.AuthenticationRateLimit — The client has provided inc
 - 语音页仍可打开,但进入时不会听到欢迎语(后端 TTS 返回 None)
 - ASR 走本地 Whisper(CPU 跑 `small` 模型,首次用会从 HuggingFace 下载约 460 MB 模型)
 
+### 配置 HuggingFace 镜像(必做)
+
+Whisper 首次加载时走 `huggingface_hub.snapshot_download` 拉 `Systran/faster-whisper-small` 模型,国内直连 `huggingface.co` 必超时。典型报错链:
+
+```
+httpcore.ConnectTimeout: [WinError 10060] 由于连接方在一段时间后没有正确答复...
+  → huggingface_hub.snapshot_download
+  → api.repo_info("huggingface.co/...")
+```
+
+触发时机:**前端连上 `/ws/duplex` 的那一刻** —— `DuplexSession` 初始化 `ASRService` → `WhisperModel(...)` → HF 下载 → 超时 → WS 握手失败。所以只要没把镜像设好,第一次打开语音页就必炸。
+
+**解决:永久设置 `HF_ENDPOINT` 环境变量,指向镜像。**
+
+Windows (PowerShell,永久生效,需重开所有终端):
+```powershell
+[Environment]::SetEnvironmentVariable("HF_ENDPOINT", "https://hf-mirror.com", "User")
+```
+
+Windows (cmd,当前窗口临时生效,每次启动语音后端前执行):
+```cmd
+set HF_ENDPOINT=https://hf-mirror.com
+```
+
+Linux / macOS:
+```bash
+echo 'export HF_ENDPOINT=https://hf-mirror.com' >> ~/.bashrc
+source ~/.bashrc
+```
+
+验证:新开终端执行 `echo %HF_ENDPOINT%`(Windows) 或 `echo $HF_ENDPOINT`(Linux/Mac),打印出镜像地址即 OK。
+
+> 也可以把 Whisper 模型换成更小的 `tiny`(约 40 MB,`.env` 里设 `WHISPER_MODEL_SIZE=tiny`),但仍需镜像,否则照样连 huggingface.co 超时。
+
 ### 申请 API
 
 - **豆包 TTS + RTASR**: https://console.volcengine.com/speech/ 申请后能拿到 APP_ID / ACCESS_KEY
@@ -416,11 +450,6 @@ A: 改 uvicorn 命令里的 `--port`,同时改前端 `src/main.js` 里的 axios 
 
 **Q: Ollama 第一次推理很慢**
 A: 首次会把模型从磁盘加载到显存/内存,10-30 秒。后续请求会快。
-
-**Q: 首次 Whisper 下载模型卡住**
-A: `small` 模型约 460 MB,国内访问 HuggingFace 慢。两个方案:
-  1. 改小模型: `.env` 里 `WHISPER_MODEL_SIZE=tiny`(约 40 MB)
-  2. 走镜像: 启动语音后端前 `set HF_ENDPOINT=https://hf-mirror.com`
 
 **Q: 进语音页没听到欢迎语**
 A: 按顺序排查:
