@@ -368,6 +368,44 @@ A: 按顺序排查:
   3. `.env` 的 `DOUBAO_TTS_APP_ID` / `ACCESS_KEY` 是否填了
   4. 点一下页面任意位置,绕过浏览器 autoplay 限制
 
+**Q: 客户端连 `/ws/duplex` 时报 `WinError 10060` / `torch.hub` 拉 GitHub 超时**
+A: 报错链大致长这样:
+```
+TimeoutError: [WinError 10060] 由于连接方在一段时间后没有正确答复...
+urllib.error.URLError: <urlopen error [WinError 10060] ...>
+RuntimeError: It looks like there is no internet connection and the repo could not be found
+  File "app/services/vad_service.py", line 35, in _load
+    torch.hub.load(repo_or_dir="snakers4/silero-vad", ...)
+ERROR: Exception in ASGI application
+```
+根因: `SileroVAD._load()` 没找到 `silero-vad` pip 包,回退到 `torch.hub.load("snakers4/silero-vad", ...)`,这一步要访问 GitHub,国内/离线机器必超时。每次 WebSocket 新连接都会重走 `DuplexSession.__init__` → `SileroVAD()` → `_load()`,所以看起来"每连必炸"。
+
+三种修复,任选其一:
+
+1. **推荐: 装 `silero-vad` pip 包**(零网络依赖)
+   ```bash
+   conda activate deepcoke
+   pip install silero-vad
+   # 校验
+   python -c "from silero_vad import load_silero_vad; load_silero_vad(); print('ok')"
+   ```
+   最新的 `environment.yml` 已把它列为默认依赖,老环境更新一次即可:
+   ```bash
+   conda env update -f llmcoking/environment.yml --prune
+   ```
+
+2. **预热 torch.hub 缓存**(保留原逻辑)
+   在能访问 GitHub 的机器上执行:
+   ```bash
+   python -c "import torch; torch.hub.load('snakers4/silero-vad', 'silero_vad', trust_repo=True)"
+   ```
+   缓存在 `C:\Users\<你>\.cache\torch\hub\snakers4_silero-vad_master\`,整目录拷到目标机器同样路径即可。
+
+3. **离线机器手动放仓库**
+   - 下载 https://github.com/snakers4/silero-vad 的 master zip
+   - 解压为 `C:\Users\<你>\.cache\torch\hub\snakers4_silero-vad_master\`
+   - 确认目录里有 `hubconf.py`
+
 ## 架构
 
 ```
