@@ -46,3 +46,5 @@ dependencies:
     - torch>=2.0
     - websockets>=16.0
     - opencc-python-reimplemented>=0.1.7
+    # VAD：装 pip 包可走本地加载，避免 torch.hub 从 GitHub 拉仓库导致的 WinError 10060 超时
+    - silero-vad>=5.1
