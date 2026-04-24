@@ -26,7 +26,7 @@
 7. [Ollama 拉取本地 LLM](#ollama-拉取本地-llm)
 8. [RAG 向量库数据](#rag-向量库数据)
 9. [Neo4j 知识图谱](#neo4j-知识图谱)
-10. [语音后端配置(可选)](#语音后端配置可选)
+10. [语音后端配置](#语音后端配置)
 11. [启动三个服务](#启动三个服务)
 12. [首次使用](#首次使用)
 13. [常见问题](#常见问题)
@@ -126,9 +126,9 @@ python -c "from silero_vad import load_silero_vad; load_silero_vad(); print('ok'
 conda env update -f llmcoking/environment.yml --prune
 ```
 
-### 可选: 配煤 Agent 的预训练模型
+### 配煤 Agent 的预训练模型
 
-`coal_agent/` 下的 `*.pkl` (sklearn 1.7.2 训练的焦炭质量预测模型) 已包含在仓库中,直接可用。
+`coal_agent/` 下的 `*.pkl` (sklearn 1.7.2 训练的焦炭质量预测模型) 已包含在仓库中,直接可用,无需额外下载。
 
 ## 前端依赖
 
@@ -180,11 +180,7 @@ ollama serve
 
 ## RAG 向量库数据
 
-文献 RAG 需要 ChromaDB 向量库。两种方式选一:
-
-### 方式 A: 下载预打包数据(推荐)
-
-Release v1.0 下载 (~46 MB):
+文献 RAG 需要 ChromaDB 向量库。从 Release v1.0 下载预打包数据 (~46 MB):
 
 - 页面: https://github.com/liuhaodong9/deepcoke_edu/releases/tag/v1.0
 - 直链: https://github.com/liuhaodong9/deepcoke_edu/releases/download/v1.0/chromadb_data.tar.gz
@@ -202,27 +198,16 @@ tar -xzf chromadb_data.tar.gz -C llmcoking/src/LLM_back/deepcoke/data
 
 解压后应出现 `data/chromadb/chroma.sqlite3` 等文件。
 
-同时需要 BGE embedding 模型文件放在 `llmcoking/src/LLM_back/deepcoke/data/bge-base-en-v1.5/`。如果没打包可以从 HuggingFace 下载: https://huggingface.co/BAAI/bge-base-en-v1.5 (约 430 MB),或运行:
+### 下载 BGE embedding 模型
+
+向量库要跟 BGE embedding 模型配对使用,放在 `llmcoking/src/LLM_back/deepcoke/data/bge-base-en-v1.5/`(约 430 MB):
 
 ```bash
 cd llmcoking/src/LLM_back
 python download_bge.py
 ```
 
-### 方式 B: 从 PDF 自行摄入
-
-把 PDF 放到 `llmcoking/src/LLM_back/papers/` (自建目录),然后:
-
-```bash
-cd llmcoking/src/LLM_back
-python fast_ingest.py
-```
-
-摄入耗时较长(每篇论文 10-60 秒),会自动用 BGE 向量化并写入 ChromaDB。
-
-### 不配 RAG 数据?
-
-RAG 数据缺失不影响其他 Agent。Supervisor 路由到 `knowledge_qa` 的问题会返回"检索结果为空"。文本问答的其他类别(闲聊/配煤/煤价等)都能正常工作。
+该脚本走 ModelScope 拉,国内直连即可,不需要翻墙。
 
 ## Neo4j 知识图谱
 
@@ -240,7 +225,7 @@ NEO4J_PASSWORD = "deepcoke2024"
 
 ### 装 Neo4j 并对齐密码
 
-1. 下载 Neo4j Desktop(推荐)或 Community Server: https://neo4j.com/download/
+1. 下载 Neo4j Desktop: https://neo4j.com/download/
 2. 启动 Neo4j,首次登录会强制改密码 —— **改成 `deepcoke2024`**(或用其他密码,但启动后端前必须 `set NEO4J_PASSWORD=你的密码`)
 3. 浏览器打开 http://localhost:7474 能登录即 OK
 4. 往图里灌实体数据:
@@ -269,16 +254,13 @@ Neo.ClientError.Security.AuthenticationRateLimit — The client has provided inc
 
 > **防坑提示**:改完密码或重启 Neo4j 后,**一定要同时重启文本后端**(终端 1 那个 `uvicorn test:app`),否则进程里缓存的 driver 会继续用老密码连,又把自己撞进限流。
 
-## 语音后端配置(可选)
+## 语音后端配置
 
-语音对话的高品质 ASR (豆包 RTASR) 和 TTS (豆包) 依赖 API 密钥。**不配置**:
+语音对话用的是豆包 TTS 合成女声欢迎语、豆包 RTASR 做实时转写、DeepSeek 做对话、本地 Whisper 做 RTASR 降级兜底。下面四步按顺序做完。
 
-- 语音页仍可打开,但进入时不会听到欢迎语(后端 TTS 返回 None)
-- ASR 走本地 Whisper(CPU 跑 `small` 模型,首次用会从 HuggingFace 下载约 460 MB 模型)
+### 配置 HuggingFace 镜像
 
-### 配置 HuggingFace 镜像(必做)
-
-Whisper 首次加载时走 `huggingface_hub.snapshot_download` 拉 `Systran/faster-whisper-small` 模型,国内直连 `huggingface.co` 必超时。典型报错链:
+Whisper 首次加载时走 `huggingface_hub.snapshot_download` 拉 `Systran/faster-whisper-small` 模型,国内直连 `huggingface.co` 必超时。不设镜像就跑不起来。典型报错链:
 
 ```
 httpcore.ConnectTimeout: [WinError 10060] 由于连接方在一段时间后没有正确答复...
@@ -308,12 +290,10 @@ source ~/.bashrc
 
 验证:新开终端执行 `echo %HF_ENDPOINT%`(Windows) 或 `echo $HF_ENDPOINT`(Linux/Mac),打印出镜像地址即 OK。
 
-> 也可以把 Whisper 模型换成更小的 `tiny`(约 40 MB,`.env` 里设 `WHISPER_MODEL_SIZE=tiny`),但仍需镜像,否则照样连 huggingface.co 超时。
-
-### 申请 API
+### 申请 API 密钥
 
 - **豆包 TTS + RTASR**: https://console.volcengine.com/speech/ 申请后能拿到 APP_ID / ACCESS_KEY
-- **DeepSeek**(LLM,语音页用,可替换为 Ollama): https://platform.deepseek.com — 注册即送额度
+- **DeepSeek**: https://platform.deepseek.com — 注册即送额度,用于语音页对话生成
 
 ### 填入 .env
 
@@ -337,8 +317,8 @@ DOUBAO_TTS_VOICE_TYPE=BV001_streaming
 DOUBAO_TTS_ENCODING=mp3
 DOUBAO_TTS_SPEED_RATIO=1.2
 
-# 豆包 RTASR (更好的实时转写, 可选; 不填则自动走 Whisper)
-DOUBAO_RTASR_API_KEY=
+# 豆包 RTASR (实时转写)
+DOUBAO_RTASR_API_KEY=你的RTASR_KEY
 
 # VAD 灵敏度
 VAD_THRESHOLD=0.5
@@ -484,10 +464,10 @@ A: 按顺序排查:
 │    ├── oven_control      │   │  Tools:
 │    ├── optimization      │   │  - coal_agent (ML pkl)
 │    ├── data_management   │   │  - vectorstore (ChromaDB+BGE)
-│    ├── knowledge_qa (RAG)│   │  - knowledge_graph (Neo4j*)
-│    └── simple_chat       │   │  - reasoning (ESCARGOT*)
+│    ├── knowledge_qa (RAG)│   │  - knowledge_graph (Neo4j)
+│    └── simple_chat       │   │  - reasoning (ESCARGOT)
 │                          │   │  - Ollama (qwen3:8b)
-└──────────────────────────┘   └─  *可选
+└──────────────────────────┘   └─
 ```
 
 ## 目录结构
@@ -515,7 +495,7 @@ deepcoke_edu/
 │   │   │       ├── classifier/       ← 快速关键词分类 + query 翻译
 │   │   │       ├── vectorstore/      ← ChromaDB RAG 检索
 │   │   │       ├── knowledge_graph/  ← Neo4j
-│   │   │       ├── reasoning/        ← ESCARGOT 因果推理 (可选)
+│   │   │       ├── reasoning/        ← ESCARGOT 因果推理
 │   │   │       ├── generation/       ← 回答生成层
 │   │   │       ├── followup/         ← 追问生成
 │   │   │       └── data/             ← [gitignore] chromadb + BGE 模型 + papers.db
