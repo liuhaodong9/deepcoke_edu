@@ -26,12 +26,13 @@
 7. [Ollama 拉取本地 LLM](#ollama-拉取本地-llm)
 8. [RAG 向量库数据](#rag-向量库数据)
 9. [Neo4j 知识图谱](#neo4j-知识图谱)
-10. [语音后端配置](#语音后端配置)
-11. [启动三个服务](#启动三个服务)
-12. [首次使用](#首次使用)
-13. [常见问题](#常见问题)
-14. [架构](#架构)
-15. [目录结构](#目录结构)
+10. [ESCARGOT 推理](#escargot-推理)
+11. [语音后端配置](#语音后端配置)
+12. [启动三个服务](#启动三个服务)
+13. [首次使用](#首次使用)
+14. [常见问题](#常见问题)
+15. [架构](#架构)
+16. [目录结构](#目录结构)
 
 ---
 
@@ -228,11 +229,41 @@ NEO4J_PASSWORD = "deepcoke2024"
 1. 下载 Neo4j Desktop: https://neo4j.com/download/
 2. 启动 Neo4j,首次登录会强制改密码 —— **改成 `deepcoke2024`**(或用其他密码,但启动后端前必须 `set NEO4J_PASSWORD=你的密码`)
 3. 浏览器打开 http://localhost:7474 能登录即 OK
-4. 往图里灌实体数据:
+4. **先抽实体,再灌图**(顺序不能反,缺第一步整个图就是空的):
+
    ```bash
    cd llmcoking/src/LLM_back
+
+   # 第 1 步：用本地 Ollama 从 papers.db 里抽实体,产出 kg_entities.json
+   python -m deepcoke.knowledge_graph.extract_entities
+
+   # 第 2 步：把 kg_entities.json 灌进 Neo4j
    python -m deepcoke.knowledge_graph.import_entities
    ```
+
+> **为什么要分两步**:`papers.db` 已包含在 chromadb 数据包里(解压后自动到位),但 `kg_entities.json` 不随仓库分发,必须现场用 LLM 抽。第 1 步会调本地 Ollama 几百次(每篇论文一次),qwen3:8b 在 RTX 4090D 上大约 30~60 分钟跑完,中途断了重跑会从断点续抽。
+>
+> 第 2 步跑完末尾应打印:
+> ```
+> Graph stats:
+>   Concept: 1xxx
+>   Paper: 2xx
+>   Method: xx
+>   ...
+> Relationships:
+>   STUDIES_CONCEPT: 4xxx
+>   ...
+> ```
+>
+> **如果跳过这两步直接启后端**,knowledge_qa 跑到 `kg_lookup` 时 Neo4j 日志会刷一堆告警:
+>
+> ```
+> The relationship type STUDIES_CONCEPT does not exist
+> The label Concept does not exist
+> The property paper_id does not exist
+> ```
+>
+> 来源是 `neo4j_client.py:51` 那条 `MATCH (p:Paper)-[:STUDIES_CONCEPT]->(c:Concept)` Cypher,空库自然命中不到任何东西。pipeline 包了 `try/except`,所以不会崩,但 `> **知识图谱补充：**` 那一段引用块也不会出现 —— 当次回答完全降级成纯 RAG。
 
 ### Neo4j 报错处理
 
@@ -253,6 +284,45 @@ Neo.ClientError.Security.AuthenticationRateLimit — The client has provided inc
      - Community Server:`neo4j restart`(Linux/Mac)或在服务管理器里重启 Neo4j 服务(Windows)
 
 > **防坑提示**:改完密码或重启 Neo4j 后,**一定要同时重启文本后端**(终端 1 那个 `uvicorn test:app`),否则进程里缓存的 driver 会继续用老密码连,又把自己撞进限流。
+
+## ESCARGOT 推理
+
+`knowledge_qa` 路线在 `kg_lookup` 之后会走 `node_reason`,调 `run_escargot_reasoning`(`pipeline_graph.py:273`)做基于 Graph of Thoughts 的因果推理。`reasoning/escargot_runner.py:14` 用 try/except 包了 `from escargot.controller.controller import Controller`,没装时只会在日志里打:
+
+```
+ESCARGOT not available: No module named 'escargot'
+```
+
+**流程不会崩,但当次回答里没有「深度推理 (ESCARGOT)」那一段证据,知识图谱回答质量明显降级。**所以这一步必装。
+
+`environment.yml` / `requirements.txt` 故意没把它列成默认依赖 —— ESCARGOT 在 PyPI 上版本(0.0.3)落后于 GitHub 主分支,且要跟仓库里的 `deepseek_lm.py` / `coking_prompter.py` 对齐用法,所以走源码 editable 安装最稳。
+
+### 1. 拉源码到 `D:\escargot`
+
+```bash
+git clone https://github.com/EpistasisLab/escargot.git D:/escargot
+```
+
+> 项目代码 `deepcoke/config.py:30` 里 `ESCARGOT_DIR` 默认就是 `<项目根>/../escargot`,但博主本地是直接放 `D:\escargot` 并通过 pip editable 安装注册到 site-packages,后者优先级更高,所以路径放哪儿都行,只要下一步 `pip install -e` 装上即可。
+
+### 2. editable 安装
+
+```bash
+conda activate deepcoke
+pip install -e D:/escargot
+```
+
+ESCARGOT 自身依赖里有 `gqlalchemy` / `weaviate-client` / `chromadb` 等十几个包,这一步会顺带把没装上的都补齐(可能要 1-2 分钟)。
+
+### 3. 验证
+
+```bash
+python -c "import escargot; from escargot.controller.controller import Controller; print('ok ->', escargot.__file__)"
+```
+
+打印 `ok -> D:\escargot\escargot\__init__.py` 即通过。
+
+启动文本后端后,跑一句 knowledge_qa 类问题(如「CRI 和 CSR 有什么区别」),终端日志里如果**没有** `ESCARGOT not available` 那一行,且回答正文里出现 `> **深度推理 (ESCARGOT):**` 引用块,则整条链路工作正常。
 
 ## 语音后端配置
 
@@ -437,6 +507,84 @@ A: 按顺序排查:
   2. 终端 2 (语音后端) 日志里有没有 `greeting failed` 一行
   3. `.env` 的 `DOUBAO_TTS_APP_ID` / `ACCESS_KEY` 是否填了
   4. 点一下页面任意位置,绕过浏览器 autoplay 限制
+
+---
+
+### 文本后端常见错误
+
+**Q: 终端日志出现 `ESCARGOT not available: No module named 'escargot'`**
+A: 没装 ESCARGOT。回 [ESCARGOT 推理](#escargot-推理) 那节,按博主路径 `git clone https://github.com/EpistasisLab/escargot.git D:/escargot && pip install -e D:/escargot` 装上,然后**重启文本后端**(进程会缓存 import 失败的状态,改完不重启不生效)。
+
+**Q: knowledge_qa 路线终端日志刷一堆 Neo4j 警告**
+
+```
+The relationship type STUDIES_CONCEPT does not exist
+The label Concept does not exist
+The property paper_id does not exist
+```
+
+A: Neo4j 装好了但**图谱是空的** —— 没跑 `extract_entities.py` 和 `import_entities.py` 这两步。回 [Neo4j 知识图谱](#neo4j-知识图谱) 那节,先 `python -m deepcoke.knowledge_graph.extract_entities` 抽实体(本地 Ollama 跑 30~60 分钟),再 `python -m deepcoke.knowledge_graph.import_entities` 灌进库,最后**重启文本后端**(driver 连接会缓存空 schema)。
+
+**Q: 后端日志打 `[retrieve] 0 unique chunks`,RAG 命中为 0**
+
+A: 三种可能,按概率排查:
+
+1. **BGE 模型没下完整**:`ls llmcoking/src/LLM_back/deepcoke/data/bge-base-en-v1.5/` 必须看到 `model.safetensors` / `config.json` / `tokenizer.json` 等。少文件就是 `download_bge.py` 中途断了,重跑一次。
+2. **chromadb 数据没解压到位**:`ls llmcoking/src/LLM_back/deepcoke/data/chromadb/` 必须看到 `chroma.sqlite3` 加一个 UUID 子目录(里面有 `data_level0.bin` 等)。少了就回 [RAG 向量库数据](#rag-向量库数据) 重做 `tar -xzf`。
+3. **embedding 维度不匹配**:`chromadb_store.py:59` 在 collection 已存在时**故意不传 `embedding_function`** 来避免冲突,但前提是 BGE 在第一次 `download_bge.py` 后能被 SentenceTransformer 自动识别。如果终端打了 `[ChromaDB] SentenceTransformer init failed ... using default embeddings`,说明回退到了 384 维默认 embedding,跟库里 768 维 BGE 向量对不上 → query 全 0 命中。修法:`pip install -U sentence-transformers`,确认 `EMBEDDING_MODEL` 路径(`config.py:19`)指向的目录里 `config.json` 存在,然后**清掉 ChromaDB 客户端进程缓存**(重启后端)。
+
+**Q: 回答正文里看不到「📚 参考文献」「🔗 知识图谱补充」「💡 深度推理 (ESCARGOT)」这些引用块**
+
+A: 三块对应三种数据源都没拿到东西。按上面三条 Q 逐一排查 —— ESCARGOT 没装、Neo4j 没灌实体、向量库召回为 0,任何一项都会让对应引用块消失,只剩 LLM 凭直觉硬答。
+
+---
+
+### 语音后端常见错误
+
+**Q: 终端 2 在用户打断 / 切页面 / 关浏览器后日志冒一大段 traceback**
+
+```
+asyncio.exceptions.CancelledError
+  File "...\deepseek_service.py", line 34, in deepseek_stream_chat
+    async with client.stream("POST", url, ...) as resp:
+  File "...\duplex_ws.py", line ..., in _runner
+    ...
+Task was destroyed but it is pending!
+task: <Task pending name='Task-NN' coro=<DuplexSession.tts_worker() ...>>
+```
+
+A: 这是**正常的清理告警**,不是崩溃。链路:VAD 检测到用户开口 → `_on_vad_speech_start` → `_interrupt`(`duplex_ws.py:516`) → `_cancel_llm`(`duplex_ws.py:537`) → 把当前 LLM Task `cancel()`,而 LLM Task 此刻正卡在 `httpx` 的 `client.stream("POST", ...)` await 上,于是 `asyncio.CancelledError` 在 `deepseek_service.py:34` 抛出冒到 `_runner` 才被 `except CancelledError: raise` 重抛(`duplex_ws.py:420`),最终被 `_cancel_llm` 里的 `contextlib.suppress(Exception)`(`duplex_ws.py:540`)吞掉。整条 traceback 只是 Python 在打 cancel 路径,不影响下一轮对话。
+
+`Task was destroyed but it is pending!` 同理 —— WebSocket 关闭时 `finally` 块会 `tts_task.cancel()`(`duplex_ws.py:653`),但偶发情况下 `tts_worker` 正卡在 `await self._tts_q.get()`,Python GC 时还没来得及完成 cancel,就打这条警告。**不影响功能,可忽略**。
+
+如果想把日志清干净,可以在 `deepseek_service.py:33` 那个 `async with httpx.AsyncClient(...)` 外面再包一层 `try/except asyncio.CancelledError: return`,以及在 `duplex_ws.py:651` 的 `finally` 里把三个 task 的 cancel 改成 `await asyncio.gather(*tasks, return_exceptions=True)` 等齐再退出。但这只是降噪,跟实际行为无关。
+
+**Q: 第一次连 `/ws/duplex` 立刻 `WinError 10060` 超时**
+
+A: 没装 `silero-vad`,语音后端在初始化 `SileroVAD()` 时回退到 `torch.hub.load("snakers4/silero-vad")` 拉 GitHub。回 [Python 环境 → 装 Silero VAD](#python-环境) 那节装好。
+
+**Q: ASR 一直没结果,日志只见 `WhisperModel(...)` 后卡住**
+
+A: HuggingFace 镜像没设。Whisper 在拉 `Systran/faster-whisper-small` 模型。回 [语音后端配置 → 配置 HuggingFace 镜像](#语音后端配置) 那节设 `HF_ENDPOINT=https://hf-mirror.com` 后重启语音后端。
+
+---
+
+### 前端常见错误
+
+**Q: 主聊天页里 bot 回复出现 `<div class="pipeline-progress">...</div>` 这种源码标签,而不是渲染成进度条**
+
+A: `MainDia.vue:128` 的 `renderMarkdown` 在跑 `marked()` 之前**先把 `<` `>` 全部转义成 `&lt;` `&gt;`**(只白名单了 `<details>` `<summary>`),目的是防 XSS。但文本后端的 `pipeline_graph.py` 在流式输出里塞了 `<div class="pipeline-progress">` 这种自定义 HTML 当进度条,被一并转义了 → 浏览器原样显示标签。
+
+修法二选一:
+
+1. **前端**:在 `MainDia.vue:130` 的占位符白名单里加上 `pipeline-progress` 等已知 class 的 `<div>` / `<span>`(参照 `details/summary` 的 `__DETAILS_PH_${idx}__` 处理),或者改成用 DOMPurify 走真正的 sanitize 而不是粗暴转义。
+2. **后端**:把 `pipeline_graph.py:_progress_html` 里的 `<div class="pipeline-progress">` 换成等价的 markdown 块(比如表情符号 + 进度文本),让前端不需要解析 HTML。
+
+博主当前用的是方案 1 的占位符思路,对应改 `MainDia.vue:130` 的正则即可。改完 `npm run serve` 会热更新,刷新页面验证。
+
+**Q: 主聊天页死活进不去,`localhost:8080` 一直转圈**
+
+A: 通常是 webpack 还在编译,等终端 3 出现 `App running at: http://localhost:8080/` 这一行再访问;另外 `src/main.js` 里 axios `baseURL` 默认指向 `localhost:8000`,如果改了文本后端端口要同步改这里。
 
 ## 架构
 
