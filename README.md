@@ -145,6 +145,17 @@ npm config set registry https://registry.npmmirror.com
 npm install
 ```
 
+### Pipeline 进度条 HTML 显示成源码的修法
+
+跑起来后,如果主聊天页里 bot 回复出现 `<div class="pipeline-progress">...</div>` 这种**源码标签**而不是渲染成进度条,根因是 `MainDia.vue:128` 的 `renderMarkdown` 在跑 `marked()` 之前**先把 `<` `>` 全部转义成 `&lt;` `&gt;`**(只白名单了 `<details>` `<summary>`)防 XSS,而文本后端的 `pipeline_graph.py` 在流式输出里塞的 `<div class="pipeline-progress">` 自定义 HTML 被一并转义掉了。
+
+修法二选一:
+
+1. **前端**:在 `MainDia.vue:130` 的占位符白名单里加上 `pipeline-progress` 等已知 class 的 `<div>` / `<span>`(参照 `details/summary` 的 `__DETAILS_PH_${idx}__` 处理),或者改成用 DOMPurify 做真正的 sanitize 而不是粗暴转义。
+2. **后端**:把 `pipeline_graph.py:_progress_html` 里的 `<div class="pipeline-progress">` 换成等价的 markdown 块(表情符号 + 进度文本),让前端不需要解析 HTML。
+
+博主当前用的是方案 1 的占位符思路,改 `MainDia.vue:130` 的正则即可。改完 `npm run serve` 会热更新,刷新页面验证。
+
 ## MySQL 建库
 
 登录 MySQL 后只需建一个空库(表会在后端启动时自动创建):
@@ -209,6 +220,14 @@ python download_bge.py
 ```
 
 该脚本走 ModelScope 拉,国内直连即可,不需要翻墙。
+
+### 召回为 0 (`[retrieve] 0 unique chunks`) 排查
+
+启动后端后第一次问 knowledge_qa 类问题,如果终端日志打 `[retrieve] 0 unique chunks`,意味着向量检索一条都没命中。三种可能,按概率排查:
+
+1. **BGE 模型没下完整**:`ls llmcoking/src/LLM_back/deepcoke/data/bge-base-en-v1.5/` 必须看到 `model.safetensors` / `config.json` / `tokenizer.json` 等。少文件就是 `download_bge.py` 中途断了,重跑一次。
+2. **chromadb 数据没解压到位**:`ls llmcoking/src/LLM_back/deepcoke/data/chromadb/` 必须看到 `chroma.sqlite3` 加一个 UUID 子目录(里面有 `data_level0.bin` 等)。少了就回上一节重做 `tar -xzf`。
+3. **embedding 维度不匹配**:`vectorstore/chromadb_store.py:59` 在 collection 已存在时**故意不传 `embedding_function`** 来避免冲突,前提是 BGE 在第一次 `download_bge.py` 后能被 SentenceTransformer 自动识别。如果终端打了 `[ChromaDB] SentenceTransformer init failed ... using default embeddings`,说明回退到了 384 维默认 embedding,跟库里 768 维 BGE 向量对不上 → query 全 0 命中。修法:`pip install -U sentence-transformers`,确认 `EMBEDDING_MODEL` 路径(`config.py:19`)指向的目录里 `config.json` 存在,然后**重启后端**清掉 ChromaDB 客户端进程缓存。
 
 ## Neo4j 知识图谱
 
@@ -396,6 +415,26 @@ VAD_THRESHOLD=0.5
 
 **`.env` 绝对不要提交到 git**(已在 `.gitignore` 排除)。
 
+### 打断 / 切页面后日志冒一段 CancelledError 的说明
+
+跑起来后,用户在 AI 说话过程中开口打断、或直接关掉浏览器标签时,终端 2 会冒出类似 traceback:
+
+```
+asyncio.exceptions.CancelledError
+  File "...\deepseek_service.py", line 34, in deepseek_stream_chat
+    async with client.stream("POST", url, ...) as resp:
+  File "...\duplex_ws.py", line ..., in _runner
+    ...
+Task was destroyed but it is pending!
+task: <Task pending name='Task-NN' coro=<DuplexSession.tts_worker() ...>>
+```
+
+**这是正常的清理告警,不是崩溃**。链路:VAD 检测到用户开口 → `_on_vad_speech_start` → `_interrupt`(`duplex_ws.py:516`) → `_cancel_llm`(`duplex_ws.py:537`) → 把当前 LLM Task `cancel()`。LLM Task 此刻正卡在 `httpx` 的 `client.stream("POST", ...)` await 上,于是 `CancelledError` 在 `deepseek_service.py:34` 抛出冒到 `_runner`,被 `except CancelledError: raise` 重抛(`duplex_ws.py:420`),最终被 `_cancel_llm` 里的 `contextlib.suppress(Exception)`(`duplex_ws.py:540`)吞掉。整条 traceback 只是 Python 在打 cancel 路径,不影响下一轮对话。
+
+`Task was destroyed but it is pending!` 同理 —— WebSocket 关闭时 `finally` 块 `tts_task.cancel()`(`duplex_ws.py:653`),偶发 `tts_worker` 正卡在 `await self._tts_q.get()`,Python GC 时还没完成 cancel 就打这条警告。**可忽略**。
+
+想把日志清干净的话:`deepseek_service.py:33` 的 `async with httpx.AsyncClient(...)` 外面再包一层 `try/except asyncio.CancelledError: return`,以及 `duplex_ws.py:651` 的 `finally` 里把三个 task 的 cancel 改成 `await asyncio.gather(*tasks, return_exceptions=True)` 等齐再退出。但这只是降噪,跟实际行为无关。
+
 ## 启动三个服务
 
 ### 一键启动(Windows)
@@ -507,84 +546,6 @@ A: 按顺序排查:
   2. 终端 2 (语音后端) 日志里有没有 `greeting failed` 一行
   3. `.env` 的 `DOUBAO_TTS_APP_ID` / `ACCESS_KEY` 是否填了
   4. 点一下页面任意位置,绕过浏览器 autoplay 限制
-
----
-
-### 文本后端常见错误
-
-**Q: 终端日志出现 `ESCARGOT not available: No module named 'escargot'`**
-A: 没装 ESCARGOT。回 [ESCARGOT 推理](#escargot-推理) 那节,按博主路径 `git clone https://github.com/EpistasisLab/escargot.git D:/escargot && pip install -e D:/escargot` 装上,然后**重启文本后端**(进程会缓存 import 失败的状态,改完不重启不生效)。
-
-**Q: knowledge_qa 路线终端日志刷一堆 Neo4j 警告**
-
-```
-The relationship type STUDIES_CONCEPT does not exist
-The label Concept does not exist
-The property paper_id does not exist
-```
-
-A: Neo4j 装好了但**图谱是空的** —— 没跑 `extract_entities.py` 和 `import_entities.py` 这两步。回 [Neo4j 知识图谱](#neo4j-知识图谱) 那节,先 `python -m deepcoke.knowledge_graph.extract_entities` 抽实体(本地 Ollama 跑 30~60 分钟),再 `python -m deepcoke.knowledge_graph.import_entities` 灌进库,最后**重启文本后端**(driver 连接会缓存空 schema)。
-
-**Q: 后端日志打 `[retrieve] 0 unique chunks`,RAG 命中为 0**
-
-A: 三种可能,按概率排查:
-
-1. **BGE 模型没下完整**:`ls llmcoking/src/LLM_back/deepcoke/data/bge-base-en-v1.5/` 必须看到 `model.safetensors` / `config.json` / `tokenizer.json` 等。少文件就是 `download_bge.py` 中途断了,重跑一次。
-2. **chromadb 数据没解压到位**:`ls llmcoking/src/LLM_back/deepcoke/data/chromadb/` 必须看到 `chroma.sqlite3` 加一个 UUID 子目录(里面有 `data_level0.bin` 等)。少了就回 [RAG 向量库数据](#rag-向量库数据) 重做 `tar -xzf`。
-3. **embedding 维度不匹配**:`chromadb_store.py:59` 在 collection 已存在时**故意不传 `embedding_function`** 来避免冲突,但前提是 BGE 在第一次 `download_bge.py` 后能被 SentenceTransformer 自动识别。如果终端打了 `[ChromaDB] SentenceTransformer init failed ... using default embeddings`,说明回退到了 384 维默认 embedding,跟库里 768 维 BGE 向量对不上 → query 全 0 命中。修法:`pip install -U sentence-transformers`,确认 `EMBEDDING_MODEL` 路径(`config.py:19`)指向的目录里 `config.json` 存在,然后**清掉 ChromaDB 客户端进程缓存**(重启后端)。
-
-**Q: 回答正文里看不到「📚 参考文献」「🔗 知识图谱补充」「💡 深度推理 (ESCARGOT)」这些引用块**
-
-A: 三块对应三种数据源都没拿到东西。按上面三条 Q 逐一排查 —— ESCARGOT 没装、Neo4j 没灌实体、向量库召回为 0,任何一项都会让对应引用块消失,只剩 LLM 凭直觉硬答。
-
----
-
-### 语音后端常见错误
-
-**Q: 终端 2 在用户打断 / 切页面 / 关浏览器后日志冒一大段 traceback**
-
-```
-asyncio.exceptions.CancelledError
-  File "...\deepseek_service.py", line 34, in deepseek_stream_chat
-    async with client.stream("POST", url, ...) as resp:
-  File "...\duplex_ws.py", line ..., in _runner
-    ...
-Task was destroyed but it is pending!
-task: <Task pending name='Task-NN' coro=<DuplexSession.tts_worker() ...>>
-```
-
-A: 这是**正常的清理告警**,不是崩溃。链路:VAD 检测到用户开口 → `_on_vad_speech_start` → `_interrupt`(`duplex_ws.py:516`) → `_cancel_llm`(`duplex_ws.py:537`) → 把当前 LLM Task `cancel()`,而 LLM Task 此刻正卡在 `httpx` 的 `client.stream("POST", ...)` await 上,于是 `asyncio.CancelledError` 在 `deepseek_service.py:34` 抛出冒到 `_runner` 才被 `except CancelledError: raise` 重抛(`duplex_ws.py:420`),最终被 `_cancel_llm` 里的 `contextlib.suppress(Exception)`(`duplex_ws.py:540`)吞掉。整条 traceback 只是 Python 在打 cancel 路径,不影响下一轮对话。
-
-`Task was destroyed but it is pending!` 同理 —— WebSocket 关闭时 `finally` 块会 `tts_task.cancel()`(`duplex_ws.py:653`),但偶发情况下 `tts_worker` 正卡在 `await self._tts_q.get()`,Python GC 时还没来得及完成 cancel,就打这条警告。**不影响功能,可忽略**。
-
-如果想把日志清干净,可以在 `deepseek_service.py:33` 那个 `async with httpx.AsyncClient(...)` 外面再包一层 `try/except asyncio.CancelledError: return`,以及在 `duplex_ws.py:651` 的 `finally` 里把三个 task 的 cancel 改成 `await asyncio.gather(*tasks, return_exceptions=True)` 等齐再退出。但这只是降噪,跟实际行为无关。
-
-**Q: 第一次连 `/ws/duplex` 立刻 `WinError 10060` 超时**
-
-A: 没装 `silero-vad`,语音后端在初始化 `SileroVAD()` 时回退到 `torch.hub.load("snakers4/silero-vad")` 拉 GitHub。回 [Python 环境 → 装 Silero VAD](#python-环境) 那节装好。
-
-**Q: ASR 一直没结果,日志只见 `WhisperModel(...)` 后卡住**
-
-A: HuggingFace 镜像没设。Whisper 在拉 `Systran/faster-whisper-small` 模型。回 [语音后端配置 → 配置 HuggingFace 镜像](#语音后端配置) 那节设 `HF_ENDPOINT=https://hf-mirror.com` 后重启语音后端。
-
----
-
-### 前端常见错误
-
-**Q: 主聊天页里 bot 回复出现 `<div class="pipeline-progress">...</div>` 这种源码标签,而不是渲染成进度条**
-
-A: `MainDia.vue:128` 的 `renderMarkdown` 在跑 `marked()` 之前**先把 `<` `>` 全部转义成 `&lt;` `&gt;`**(只白名单了 `<details>` `<summary>`),目的是防 XSS。但文本后端的 `pipeline_graph.py` 在流式输出里塞了 `<div class="pipeline-progress">` 这种自定义 HTML 当进度条,被一并转义了 → 浏览器原样显示标签。
-
-修法二选一:
-
-1. **前端**:在 `MainDia.vue:130` 的占位符白名单里加上 `pipeline-progress` 等已知 class 的 `<div>` / `<span>`(参照 `details/summary` 的 `__DETAILS_PH_${idx}__` 处理),或者改成用 DOMPurify 走真正的 sanitize 而不是粗暴转义。
-2. **后端**:把 `pipeline_graph.py:_progress_html` 里的 `<div class="pipeline-progress">` 换成等价的 markdown 块(比如表情符号 + 进度文本),让前端不需要解析 HTML。
-
-博主当前用的是方案 1 的占位符思路,对应改 `MainDia.vue:130` 的正则即可。改完 `npm run serve` 会热更新,刷新页面验证。
-
-**Q: 主聊天页死活进不去,`localhost:8080` 一直转圈**
-
-A: 通常是 webpack 还在编译,等终端 3 出现 `App running at: http://localhost:8080/` 这一行再访问;另外 `src/main.js` 里 axios `baseURL` 默认指向 `localhost:8000`,如果改了文本后端端口要同步改这里。
 
 ## 架构
 
