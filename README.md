@@ -345,7 +345,7 @@ python -c "import escargot; from escargot.controller.controller import Controlle
 
 ## 语音后端配置
 
-语音对话用的是豆包 TTS 合成女声欢迎语、豆包 RTASR 做实时转写、DeepSeek 做对话、本地 Whisper 做 RTASR 降级兜底。下面四步按顺序做完。
+语音对话用的是豆包 TTS 合成女声欢迎语、豆包 RTASR 做实时转写、DeepSeek 做对话、本地 Whisper 做 RTASR 降级兜底。下面五步按顺序做完。
 
 ### 配置 HuggingFace 镜像
 
@@ -378,6 +378,33 @@ source ~/.bashrc
 ```
 
 验证:新开终端执行 `echo %HF_ENDPOINT%`(Windows) 或 `echo $HF_ENDPOINT`(Linux/Mac),打印出镜像地址即 OK。
+
+### 安装 cuDNN 8.x(Whisper 走 GPU 必装)
+
+Whisper 推理用的 ctranslate2 在 GPU 模式下要加载 cuDNN 8.x 这一组 DLL(`cudnn_ops_infer64_8.dll` 等),**PyTorch 自带的 CUDA runtime 里没有,必须单独装**。漏装就只能跑 CPU,且语音页一连就崩。
+
+1. 打开 https://developer.nvidia.com/cudnn-archive(需 NVIDIA 账号),下载和你 CUDA 版本对应的 **cuDNN 8.9.x for CUDA 12.x** 的 Windows zip 包。
+
+   > **注意**:必须是 8.x,**不能装 9.x**。ctranslate2 4.4 用的还是 cuDNN 8 的 ABI,装 9.x 同样找不到 `cudnn_ops_infer64_8.dll`。
+
+2. 解压 zip,把里面 `bin\` 下所有 `cudnn_*64_8.dll` 全部拷到 CUDA 安装目录的 `bin\` 下:
+
+   ```
+   C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.x\bin\
+   ```
+
+   这个路径已经在系统 PATH 上,Python 进程能直接找到。
+
+3. 验证 —— 新开终端跑:
+
+   ```bash
+   conda activate deepcoke
+   python -c "from faster_whisper import WhisperModel; m = WhisperModel('small', device='cuda', compute_type='float16'); print('ok')"
+   ```
+
+   打印 `ok` 即通过。报 `Could not locate cudnn_ops_infer64_8.dll` 说明 DLL 没拷对位置;报 `CUDA failed with error ...` 说明 CUDA 版本和 cuDNN 不匹配,回第 1 步重新对号入座下载。
+
+> 如果机器没 GPU,跳过这一节,在下一步的 `.env` 里把 `WHISPER_DEVICE` 改成 `cpu`、`WHISPER_COMPUTE_TYPE` 改成 `int8` 即可。
 
 ### 申请 API 密钥
 
@@ -414,21 +441,6 @@ VAD_THRESHOLD=0.5
 ```
 
 **`.env` 绝对不要提交到 git**(已在 `.gitignore` 排除)。
-
-### Whisper 启动报 `Could not locate cudnn_ops_infer64_8.dll`
-
-打开语音页,终端 2 先打 `WebSocket /ws/duplex [accepted]` / `connection open`,紧接着就炸:
-
-```
-Could not locate cudnn_ops_infer64_8.dll.
-Please make sure it is in your library path!
-```
-
-原因:Whisper 默认走 GPU,GPU 推理需要 cuDNN 8.x 这组 DLL,**PyTorch 自带的 CUDA runtime 里没有,得单独装 NVIDIA cuDNN**。
-
-去 https://developer.nvidia.com/cudnn-archive 下载和你 CUDA 版本对应的 cuDNN 8.9.x(需 NVIDIA 账号,**不要装 9.x**),把压缩包 `bin\` 里的几个 `cudnn_*64_8.dll` 全拷到 `C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.x\bin\`,重启终端 2 即可。
-
-> 如果机器没有 GPU,在 `voice_agent_backend/.env` 里加 `WHISPER_DEVICE=cpu` 和 `WHISPER_COMPUTE_TYPE=int8`,改完重启终端 2,Whisper 会改走 CPU,不再加载 cuDNN。
 
 ### 打断 / 切页面后日志冒一段 CancelledError 的说明
 
