@@ -40,13 +40,13 @@
 
 | 项 | 最低 | 推荐 |
 |---|---|---|
-| 操作系统 | Windows 10 / Linux / macOS | **Windows 11**(项目原生) |
+| 操作系统 | Windows 10 | **Windows 11**(项目原生) |
 | 内存 | 16 GB | 32 GB 以上 |
 | GPU | 无(CPU 可用) | NVIDIA RTX,≥ 12 GB 显存(加速 Ollama / Whisper) |
 | 磁盘 | 10 GB 可用 | 20 GB 可用 |
 | 网络 | 首次安装依赖需外网 | — |
 
-> Linux / macOS 也能跑,但 `start_all_windows.bat` 不可用,需按文末"手动启动"三端开起来。路径分隔符已在代码中使用正斜杠,无兼容问题。
+> 本项目仅在 Windows 上验证过运行,以下所有命令均假定你使用的是 Windows + Anaconda Prompt(或 Git Bash)。
 
 ## 前置软件安装
 
@@ -197,18 +197,14 @@ ollama serve
 - 页面: https://github.com/liuhaodong9/deepcoke_edu/releases/tag/v1.0
 - 直链: https://github.com/liuhaodong9/deepcoke_edu/releases/download/v1.0/chromadb_data.tar.gz
 
-解压到 `llmcoking/src/LLM_back/deepcoke/data/chromadb/`:
+解压到 `llmcoking/src/LLM_back/deepcoke/data/chromadb/`。打开 PowerShell 执行:
 
-```bash
-# Linux/Mac/Git Bash
-mkdir -p llmcoking/src/LLM_back/deepcoke/data
-tar -xzf chromadb_data.tar.gz -C llmcoking/src/LLM_back/deepcoke/data
-
-# Windows PowerShell
-tar -xzf chromadb_data.tar.gz -C llmcoking/src/LLM_back/deepcoke/data
+```powershell
+mkdir llmcoking\src\LLM_back\deepcoke\data
+tar -xzf chromadb_data.tar.gz -C llmcoking\src\LLM_back\deepcoke\data
 ```
 
-解压后应出现 `data/chromadb/chroma.sqlite3` 等文件。
+解压完成后,`data\chromadb\` 目录下应出现 `chroma.sqlite3` 等文件。
 
 ### 下载 BGE embedding 模型
 
@@ -300,7 +296,7 @@ Neo.ClientError.Security.AuthenticationRateLimit — The client has provided inc
   1. 等 5~30 分钟让限流窗口过期
   2. 重启 Neo4j 清除限流状态
      - Desktop:点停止 → 再点启动
-     - Community Server:`neo4j restart`(Linux/Mac)或在服务管理器里重启 Neo4j 服务(Windows)
+     - Community Server:打开服务管理器(`services.msc`),找到 Neo4j 服务,右键"重新启动"
 
 > **防坑提示**:改完密码或重启 Neo4j 后,**一定要同时重启文本后端**(终端 1 那个 `uvicorn test:app`),否则进程里缓存的 driver 会继续用老密码连,又把自己撞进限流。
 
@@ -359,25 +355,19 @@ httpcore.ConnectTimeout: [WinError 10060] 由于连接方在一段时间后没�
 
 触发时机:**前端连上 `/ws/duplex` 的那一刻** —— `DuplexSession` 初始化 `ASRService` → `WhisperModel(...)` → HF 下载 → 超时 → WS 握手失败。所以只要没把镜像设好,第一次打开语音页就必炸。
 
-**解决:永久设置 `HF_ENDPOINT` 环境变量,指向镜像。**
+**解决方案:把 `HF_ENDPOINT` 环境变量永久设为镜像地址。** 推荐用 PowerShell 一次性写入用户级环境变量,改完所有新开的终端都自动生效:
 
-Windows (PowerShell,永久生效,需重开所有终端):
 ```powershell
 [Environment]::SetEnvironmentVariable("HF_ENDPOINT", "https://hf-mirror.com", "User")
 ```
 
-Windows (cmd,当前窗口临时生效,每次启动语音后端前执行):
+如果只想临时在当前 cmd 窗口生效(每次启动语音后端前都要重设一次),也可以用:
+
 ```cmd
 set HF_ENDPOINT=https://hf-mirror.com
 ```
 
-Linux / macOS:
-```bash
-echo 'export HF_ENDPOINT=https://hf-mirror.com' >> ~/.bashrc
-source ~/.bashrc
-```
-
-验证:新开终端执行 `echo %HF_ENDPOINT%`(Windows) 或 `echo $HF_ENDPOINT`(Linux/Mac),打印出镜像地址即 OK。
+**验证**:新开一个 cmd,执行 `echo %HF_ENDPOINT%`,打印出 `https://hf-mirror.com` 即配置成功。
 
 ### 安装 cuDNN 8.x(Whisper 走 GPU 必装)
 
@@ -441,12 +431,14 @@ python -c "from faster_whisper import WhisperModel; m = WhisperModel('small', de
 
 ### 填入 .env
 
-```bash
-cd llmcoking/voice_agent_backend
-cp .env.example .env
+打开 cmd,执行:
+
+```cmd
+cd llmcoking\voice_agent_backend
+copy .env.example .env
 ```
 
-编辑 `.env`,至少填这几项:
+用记事本(或 VS Code)打开 `.env`,至少填这几项:
 
 ```ini
 DEEPSEEK_API_KEY=sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
@@ -500,32 +492,34 @@ llmcoking\start_all_windows.bat
 
 脚本会自动打开 3 个 cmd 窗口,分别跑文本后端 (8000)、语音后端 (8001)、前端 (8080)。
 
-### 手动启动(跨平台)
+### 手动启动
+
+如果不想用一键脚本,可以分别开三个 cmd 窗口手动启动。
 
 **终端 1 — 文本后端:**
 
-```bash
+```cmd
 conda activate deepcoke
-cd llmcoking/src/LLM_back
+cd llmcoking\src\LLM_back
 python -m uvicorn test:app --host 0.0.0.0 --port 8000
 ```
 
 **终端 2 — 语音后端:**
 
-```bash
+```cmd
 conda activate deepcoke
-cd llmcoking/voice_agent_backend
+cd llmcoking\voice_agent_backend
 python -m uvicorn app.main:app --host 0.0.0.0 --port 8001
 ```
 
 **终端 3 — 前端:**
 
-```bash
+```cmd
 cd llmcoking
 npm run serve
 ```
 
-三个终端都要保持开着。
+三个终端必须全程保持开启,关闭任意一个对应服务都会停止。
 
 ## 首次使用
 
