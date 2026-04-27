@@ -381,30 +381,58 @@ source ~/.bashrc
 
 ### 安装 cuDNN 8.x(Whisper 走 GPU 必装)
 
-Whisper 推理用的 ctranslate2 在 GPU 模式下要加载 cuDNN 8.x 这一组 DLL(`cudnn_ops_infer64_8.dll` 等),**PyTorch 自带的 CUDA runtime 里没有,必须单独装**。漏装就只能跑 CPU,且语音页一连就崩。
+Whisper 推理用的 ctranslate2 在 GPU 模式下要加载 cuDNN 8.x 这一组 DLL(`cudnn_ops_infer64_8.dll` 等),**PyTorch 自带的 CUDA runtime 里没有,必须单独装**。漏装语音页一连就崩。
 
-1. 打开 https://developer.nvidia.com/cudnn-archive(需 NVIDIA 账号),下载和你 CUDA 版本对应的 **cuDNN 8.9.x for CUDA 12.x** 的 Windows zip 包。
+#### 第 1 步:查自己的 CUDA 版本
 
-   > **注意**:必须是 8.x,**不能装 9.x**。ctranslate2 4.4 用的还是 cuDNN 8 的 ABI,装 9.x 同样找不到 `cudnn_ops_infer64_8.dll`。
+新开 cmd,执行:
 
-2. 解压 zip,把里面 `bin\` 下所有 `cudnn_*64_8.dll` 全部拷到 CUDA 安装目录的 `bin\` 下:
+```cmd
+nvcc --version
+```
+
+最后一行 `Cuda compilation tools, release 12.x` 里的 `12.x` 就是你的 CUDA 版本(比如 `12.1`、`12.4`)。下一步下载时要按这个号对。
+
+> 如果提示 `nvcc 不是内部命令`,说明没装 CUDA Toolkit。去 https://developer.nvidia.com/cuda-toolkit-archive 下载和你 PyTorch 匹配的 CUDA 12.x 装上,装完重开 cmd 再跑 `nvcc --version`。
+
+#### 第 2 步:下载 cuDNN 8.9.x
+
+1. 浏览器打开 https://developer.nvidia.com/cudnn-archive
+2. 页面会列出所有历史版本。找到 **"Download cuDNN v8.9.7 (December 5th, 2023), for CUDA 12.x"** 这一行,点开。
+3. 下面会展开几个下载链接,点 **"Local Installer for Windows (Zip)"**。
+4. 第一次下载会跳到登录页,点 **"Login"**,没账号就 **"Create an account"**,用邮箱注册一个免费账号(NVIDIA Developer),登录后会自动跳回下载页,再点一次那个 zip 链接就开始下了。文件名形如 `cudnn-windows-x86_64-8.9.7.29_cuda12-archive.zip`,约 700 MB。
+
+> **必须 8.x,不能 9.x**。ctranslate2 4.4 用的还是 cuDNN 8 的 ABI,装 9.x 同样找不到 `cudnn_ops_infer64_8.dll`,白忙一场。
+
+#### 第 3 步:把 DLL 拷到 CUDA 安装目录
+
+1. 右键解压下载下来的 zip,得到一个 `cudnn-windows-x86_64-8.9.7.29_cuda12-archive` 文件夹。
+2. 进文件夹里的 `bin\` 子目录,看到一堆 `cudnn_*64_8.dll`(共 7~8 个)。**Ctrl+A 全选 → Ctrl+C 复制**。
+3. 文件资源管理器地址栏粘贴下面这条路径并回车(把 `v12.x` 换成第 1 步查到的版本,如 `v12.1`):
 
    ```
-   C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.x\bin\
+   C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.x\bin
    ```
 
-   这个路径已经在系统 PATH 上,Python 进程能直接找到。
+4. 在这个 `bin` 目录里 **Ctrl+V 粘贴**,Windows 会要求管理员权限,点 **"继续"**。
 
-3. 验证 —— 新开终端跑:
+> 这个路径已经在系统 PATH 上,Python 进程能直接找到 DLL,不用再手动改环境变量。
 
-   ```bash
-   conda activate deepcoke
-   python -c "from faster_whisper import WhisperModel; m = WhisperModel('small', device='cuda', compute_type='float16'); print('ok')"
-   ```
+#### 第 4 步:验证
 
-   打印 `ok` 即通过。报 `Could not locate cudnn_ops_infer64_8.dll` 说明 DLL 没拷对位置;报 `CUDA failed with error ...` 说明 CUDA 版本和 cuDNN 不匹配,回第 1 步重新对号入座下载。
+新开一个 cmd(必须新开,旧终端读不到刚拷的 DLL),执行:
 
-> 如果机器没 GPU,跳过这一节,在下一步的 `.env` 里把 `WHISPER_DEVICE` 改成 `cpu`、`WHISPER_COMPUTE_TYPE` 改成 `int8` 即可。
+```bash
+conda activate deepcoke
+python -c "from faster_whisper import WhisperModel; m = WhisperModel('small', device='cuda', compute_type='float16'); print('ok')"
+```
+
+打印 `ok` 即通过。
+
+- 如果报 `Could not locate cudnn_ops_infer64_8.dll`:DLL 没拷到位,回第 3 步检查文件确实落在 `CUDA\v12.x\bin\` 下。
+- 如果报 `CUDA failed with error ...`:CUDA 版本和 cuDNN 对不上,回第 2 步重新挑对应 CUDA 12.x 的 cuDNN 包。
+
+> 如果机器没 GPU,**跳过这一整节**,在下一步的 `.env` 里把 `WHISPER_DEVICE` 改成 `cpu`、`WHISPER_COMPUTE_TYPE` 改成 `int8` 即可。
 
 ### 申请 API 密钥
 
