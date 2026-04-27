@@ -417,33 +417,18 @@ VAD_THRESHOLD=0.5
 
 ### Whisper 启动报 `Could not locate cudnn_ops_infer64_8.dll`
 
-跑起来后,前端打开语音页,终端 2 先打:
-
-```
-WebSocket /ws/duplex [accepted]
-connection open
-```
-
-紧接着炸:
+打开语音页,终端 2 先打 `WebSocket /ws/duplex [accepted]` / `connection open`,紧接着就炸:
 
 ```
 Could not locate cudnn_ops_infer64_8.dll.
 Please make sure it is in your library path!
 ```
 
-WS 一秒断掉,下一次连还是同样的错。
+原因:Whisper 默认走 GPU,GPU 推理需要 cuDNN 8.x 这组 DLL,**PyTorch 自带的 CUDA runtime 里没有,得单独装 NVIDIA cuDNN**。
 
-**根因**:`WHISPER_DEVICE` 默认 `auto`(`voice_agent_backend/app/core/config.py:18`),`asr_service.py:36-47` 检测到 `torch.cuda.is_available()` 为 True 就走 CUDA 分支,以 `WhisperModel(..., device="cuda", compute_type="float16")` 初始化 ctranslate2。ctranslate2 的 GPU 后端在 forward 时要去加载 `cudnn_ops_infer64_8.dll` / `cudnn_cnn_infer64_8.dll` 这一组 cuDNN 8.x 推理库,**而 PyTorch 安装时自带的 CUDA runtime 不包含这些 DLL,必须单独装 NVIDIA cuDNN**。机器装了 CUDA 12.x 但没装 cuDNN 8.x 必触发。
+去 https://developer.nvidia.com/cudnn-archive 下载和你 CUDA 版本对应的 cuDNN 8.9.x(需 NVIDIA 账号,**不要装 9.x**),把压缩包 `bin\` 里的几个 `cudnn_*64_8.dll` 全拷到 `C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.x\bin\`,重启终端 2 即可。
 
-修法二选一:
-
-1. **强制 Whisper 走 CPU(推荐,改一行就好)**:`voice_agent_backend/.env` 里加 / 改:
-   ```ini
-   WHISPER_DEVICE=cpu
-   WHISPER_COMPUTE_TYPE=int8
-   ```
-   项目里 Whisper 只是 RTASR 失败时的离线兜底,默认 `small` 模型 + int8 在 CPU 上 RTF 远小于 1,实时转写完全够用。改完重启语音后端(终端 2)即生效。
-2. **装 cuDNN 8.x 让 GPU 路径跑通**:NVIDIA 官网下载与你 CUDA 版本对应的 cuDNN 8.9.x(`https://developer.nvidia.com/cudnn-archive`,需 NVIDIA 账号),把压缩包里 `bin\` 下的 `cudnn_ops_infer64_8.dll` / `cudnn_cnn_infer64_8.dll` / `cudnn_ops_train64_8.dll` / `cudnn_adv_infer64_8.dll` 等几个 DLL 拷到 `C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.x\bin\`(已在 PATH 上),或单开一个目录加进系统 PATH。重启终端 2 验证。注意 cuDNN 9.x **不行**,ctranslate2 4.4 还在用 cuDNN 8.x 的 ABI,装错版本同样报这条错。
+> 如果机器没有 GPU,在 `voice_agent_backend/.env` 里加 `WHISPER_DEVICE=cpu` 和 `WHISPER_COMPUTE_TYPE=int8`,改完重启终端 2,Whisper 会改走 CPU,不再加载 cuDNN。
 
 ### 打断 / 切页面后日志冒一段 CancelledError 的说明
 
