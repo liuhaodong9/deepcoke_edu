@@ -219,6 +219,16 @@ async def chat(session_id: str, user_message: str, db: Session = Depends(get_db)
             # 流结束或异常都尽量把已有内容落库
             full_reply = "".join(bot_response_parts).strip()
             try:
+                # 兜底:如果 session_id 在 chat_sessions 不存在(curl 直测/前端漏建),
+                # 先 INSERT IGNORE 一行占位 session,避免 messages 外键 IntegrityError
+                from sqlalchemy import text as _sql_text
+                db.execute(
+                    _sql_text(
+                        "INSERT IGNORE INTO chat_sessions (user_id, session_id) "
+                        "VALUES (:uid, :sid)"
+                    ),
+                    {"uid": "_orphan_", "sid": session_id},
+                )
                 new_message = Message(
                     session_id=session_id,
                     user_message=user_message,
@@ -229,7 +239,7 @@ async def chat(session_id: str, user_message: str, db: Session = Depends(get_db)
                 db.commit()
             except Exception as e2:
                 db.rollback()
-                logger.error(f"db commit error: {repr(e2)}")
+                logger.warning(f"db commit skipped: {type(e2).__name__}: {e2}")
 
     # 保持与前端相同的流式响应格式
     return StreamingResponse(
@@ -356,3 +366,239 @@ async def all_coals_page(page: int = 1, page_size: int = 10):
     start = (page - 1) * page_size
     end = start + page_size
     return {"total": total, "page": page, "page_size": page_size, "data": rows[start:end]}
+
+
+# ─── 文献库 API ───────────────────────────────────────────────────
+@app.get("/papers/{paper_id}/pdf")
+async def get_paper_pdf(paper_id: int):
+    """返回某篇文献的 PDF 文件,前端可 iframe/新窗口打开。"""
+    import sqlite3
+    import re
+    from pathlib import Path
+    from urllib.parse import quote
+    from starlette.responses import FileResponse
+    from fastapi import HTTPException
+    from deepcoke import config as _c
+
+    db = sqlite3.connect(str(_c.DATA_DIR / "papers.db"))
+    row = db.execute("SELECT file_path, title FROM papers WHERE id = ?", (paper_id,)).fetchone()
+    db.close()
+    if not row:
+        raise HTTPException(status_code=404, detail=f"paper_id={paper_id} 不存在")
+    file_path = (row[0] or "").replace("/", "\\")
+    if not file_path or not Path(file_path).exists():
+        raise HTTPException(status_code=404, detail=f"PDF 文件不存在: {file_path}")
+
+    # 文件名: ASCII 版做 fallback,UTF-8 版用 RFC 5987 编码避免触发 uvicorn 的 header 校验
+    raw = (row[1] or f"paper_{paper_id}")[:80]
+    ascii_name = re.sub(r"[^A-Za-z0-9._\- ]", "_", raw).strip("_ ") or f"paper_{paper_id}"
+    utf8_name = quote(raw + ".pdf", safe="")
+    disposition = f"inline; filename=\"{ascii_name}.pdf\"; filename*=UTF-8''{utf8_name}"
+    return FileResponse(
+        file_path,
+        media_type="application/pdf",
+        headers={"Content-Disposition": disposition},
+    )
+
+
+@app.get("/papers/{paper_id}")
+async def get_paper_meta(paper_id: int):
+    """返回单篇文献的完整 metadata。"""
+    import sqlite3
+    from fastapi import HTTPException
+    from deepcoke import config as _c
+
+    db = sqlite3.connect(str(_c.DATA_DIR / "papers.db"))
+    db.row_factory = sqlite3.Row
+    row = db.execute(
+        "SELECT id, title, authors, year, category, journal, abstract FROM papers WHERE id = ?",
+        (paper_id,),
+    ).fetchone()
+    db.close()
+    if not row:
+        raise HTTPException(status_code=404, detail=f"paper_id={paper_id} 不存在")
+    return dict(row)
+
+
+@app.get("/chunk/{chunk_id}/full")
+async def get_chunk_full(chunk_id: str):
+    """调试端点:返回 chunk 的完整原文(不截断)+ 元数据,
+    用于对比 LITQA_META.chunks[i].text(截断 1500 字)和 chunks 库里的真实内容。
+
+    chunk_id 格式约定:f"{paper_id}_{chunk_index}",
+    例:GET /chunk/5_1/full → 返回 paper_id=5 第 1 个 chunk 的全文。
+    """
+    from fastapi import HTTPException
+    from deepcoke.vectorstore.chromadb_store import get_chroma_client
+    from deepcoke import config as _c
+
+    client = get_chroma_client()
+    col = client.get_collection(_c.CHROMADB_COLLECTION)
+
+    # 优先按 ChromaDB 内部 ID 直查
+    try:
+        res = col.get(ids=[chunk_id], include=["documents", "metadatas"])
+    except Exception:
+        res = None
+    found = res and res.get("ids") and len(res["ids"]) > 0
+
+    # 兜底:按 paper_id + chunk_index 双重过滤(应付 ID 格式不是 pid_cidx 的老数据)
+    if not found:
+        try:
+            pid_str, cidx_str = chunk_id.split("_", 1)
+            pid, cidx = int(pid_str), int(cidx_str)
+            res = col.get(
+                where={"$and": [{"paper_id": pid}, {"chunk_index": cidx}]},
+                include=["documents", "metadatas"],
+            )
+            found = res and res.get("ids") and len(res["ids"]) > 0
+        except (ValueError, KeyError):
+            pass
+
+    if not found:
+        raise HTTPException(
+            status_code=404,
+            detail=f"chunk_id={chunk_id} 未在 ChromaDB 中找到(尝试了 ids 直查 + paper_id/chunk_index 兜底过滤)",
+        )
+
+    return {
+        "chunk_id": res["ids"][0],
+        "text": res["documents"][0],
+        "metadata": res["metadatas"][0],
+        "text_length": len(res["documents"][0]),
+    }
+
+
+# ─── 知识图谱子图(给前端 vis-network 渲染)──────────────────────
+@app.get("/paper_graph")
+async def paper_graph(paper_ids: str, scores: str = ""):
+    """给定一组 paper_id,返回它们在知识图谱中的子图(vis-network 格式)。
+
+    优先从 Neo4j 出真实子图(Paper + 一跳邻居 Concept/Method/Material/Property);
+    Neo4j 未启动或图谱未灌入时,退化为 Query→Papers 放射图(只用 papers.db 元数据)。
+
+    Query:
+      paper_ids=1,2,3      逗号分隔的 paper_id 列表
+      scores=0.81,0.78,... (可选)对应每个 paper_id 的检索相似度,作为边 label
+    Response: { "nodes": [{id,label,group,title?}], "edges": [{from,to,label,arrows}], "source": ... }
+    """
+    pids = [int(x) for x in paper_ids.split(",") if x.strip().isdigit()]
+    if not pids:
+        return {"nodes": [], "edges": [], "source": "empty"}
+
+    score_list = []
+    if scores:
+        for s in scores.split(","):
+            try:
+                score_list.append(float(s))
+            except ValueError:
+                score_list.append(None)
+    while len(score_list) < len(pids):
+        score_list.append(None)
+    score_map = {pid: score_list[i] for i, pid in enumerate(pids)}
+
+    # 1) 优先 Neo4j
+    from deepcoke.knowledge_graph.neo4j_client import execute_cypher, get_driver
+    if get_driver() is not None:
+        cypher = """
+        MATCH (p:Paper)
+        WHERE p.paper_id IN $pids
+        OPTIONAL MATCH (p)-[r]->(n)
+        WHERE labels(n)[0] IN ['Concept','Method','Material','Property']
+        RETURN p.paper_id AS pid, p.title AS ptitle, p.year AS pyear,
+               type(r) AS rtype, labels(n)[0] AS ntype,
+               coalesce(n.name, n.title, '') AS nname
+        """
+        rows = execute_cypher(cypher, {"pids": pids})
+        if rows:
+            return {**_build_graph_from_neo4j(rows, score_map), "source": "neo4j"}
+
+    # 2) Fallback: Query→Papers 放射,只用 papers.db
+    return {**_build_graph_fallback(pids, score_map), "source": "fallback"}
+
+
+def _build_graph_from_neo4j(rows: list[dict], score_map: dict) -> dict:
+    nodes: dict[str, dict] = {}
+    edges: list[dict] = []
+    seen_edges: set[tuple] = set()
+    for r in rows:
+        pid = r["pid"]
+        p_id = f"P{pid}"
+        if p_id not in nodes:
+            title = r.get("ptitle") or f"Paper {pid}"
+            year = r.get("pyear")
+            label = title[:40] + ("…" if len(title) > 40 else "")
+            if year:
+                label = f"{label}\n({year})"
+            nodes[p_id] = {
+                "id": p_id,
+                "label": label,
+                "group": "Paper",
+                "title": title,
+                "paper_id": pid,
+                "score": score_map.get(pid),
+            }
+        rtype = r.get("rtype")
+        ntype = r.get("ntype")
+        nname = r.get("nname")
+        if rtype and ntype and nname:
+            n_id = f"{ntype[0]}_{nname}"
+            if n_id not in nodes:
+                nodes[n_id] = {
+                    "id": n_id,
+                    "label": nname[:24] + ("…" if len(nname) > 24 else ""),
+                    "group": ntype,
+                    "title": nname,
+                }
+            ekey = (p_id, n_id, rtype)
+            if ekey not in seen_edges:
+                edges.append({"from": p_id, "to": n_id, "label": rtype, "arrows": "to"})
+                seen_edges.add(ekey)
+    return {"nodes": list(nodes.values()), "edges": edges}
+
+
+def _build_graph_fallback(pids: list[int], score_map: dict) -> dict:
+    """Neo4j 不可用时:Query → Papers 放射图,边 label = 相似度。"""
+    import sqlite3
+    from deepcoke import config as _c
+
+    db = sqlite3.connect(str(_c.DATA_DIR / "papers.db"))
+    db.row_factory = sqlite3.Row
+    placeholders = ",".join("?" * len(pids))
+    rows = db.execute(
+        f"SELECT id, title, year FROM papers WHERE id IN ({placeholders})",
+        pids,
+    ).fetchall()
+    db.close()
+    by_id = {r["id"]: r for r in rows}
+
+    nodes = [{"id": "Q", "label": "本次查询", "group": "Query", "title": "用户问题"}]
+    edges = []
+    # 按 pids 原序输出,保留与 score 的对应
+    for pid in pids:
+        r = by_id.get(pid)
+        if not r:
+            continue
+        title = r["title"] or f"Paper {pid}"
+        year = r["year"]
+        label = title[:40] + ("…" if len(title) > 40 else "")
+        if year:
+            label = f"{label}\n({year})"
+        nodes.append({
+            "id": f"P{pid}",
+            "label": label,
+            "group": "Paper",
+            "title": title,
+            "paper_id": pid,
+            "score": score_map.get(pid),
+        })
+        s = score_map.get(pid)
+        edge_label = f"{s:.2f}" if isinstance(s, (int, float)) else "命中"
+        edges.append({
+            "from": "Q",
+            "to": f"P{pid}",
+            "label": edge_label,
+            "arrows": "to",
+            "value": s if isinstance(s, (int, float)) else 0.5,  # vis-network 边粗细
+        })
+    return {"nodes": nodes, "edges": edges}

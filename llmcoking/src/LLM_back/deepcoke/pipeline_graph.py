@@ -19,6 +19,7 @@ from .knowledge_graph.neo4j_client import find_related_papers
 from .generation.answer_generator import generate_answer_stream
 from .followup.followup_generator import generate_followup_questions, format_followup_block
 from .reasoning.escargot_runner import run_escargot_reasoning
+from .term_fix import fix_terms
 
 logger = logging.getLogger("deepcoke.pipeline")
 
@@ -50,21 +51,29 @@ class PipelineState(TypedDict):
 # ══════════════════════════════════════════════════════════════════
 
 def _progress_html(steps: list[dict]) -> str:
-    """将进度步骤拼成带进度条的 HTML 块。"""
+    """将进度步骤拼成 HTML 块。
+
+    UI 约定(前端 MainDia.vue CSS 配套):
+    - pending 状态:不发 ⏳ 字符,前端 ::before 渲染旋转 spinner
+    - done 状态:发 ✅ 字符
+    - 进度条 bar / 百分比文字仍发出但前端 CSS 隐藏(保留 DOM 兼容)
+    """
     lines = ['<div class="pipeline-progress">']
     for step in steps:
-        icon = '✅' if step.get('done') else '⏳'
-        lines.append(f'<div class="progress-step">{icon} {step["text"]}</div>')
+        if step.get('done'):
+            lines.append(f'<div class="progress-step done">✅ {step["text"]}</div>')
+        else:
+            lines.append(f'<div class="progress-step pending">{step["text"]}</div>')
     total = len(steps)
     done_count = sum(1 for s in steps if s.get('done'))
     pct = steps[-1].get('pct', int(done_count / max(total, 1) * 100)) if steps else 0
     is_complete = pct >= 100
     bar_class = 'progress-bar-complete' if is_complete else ''
-    lines.append(f'<div class="progress-bar-wrap">')
+    lines.append('<div class="progress-bar-wrap">')
     lines.append(f'<div class="progress-bar-fill {bar_class}" style="width:{pct}%"></div>')
-    lines.append(f'</div>')
+    lines.append('</div>')
     if is_complete:
-        lines.append(f'<div class="progress-pct-done">✅ 完成</div>')
+        lines.append('<div class="progress-pct-done">✅ 完成</div>')
     else:
         lines.append(f'<div class="progress-pct">{pct}%</div>')
     lines.append('</div>\n\n')
@@ -80,7 +89,7 @@ def node_supervisor(state: PipelineState) -> dict:
     question = state["question"]
     logger.info(f"[supervisor] question={question[:50]}")
 
-    steps = [{'text': 'Supervisor：正在分析问题…', 'done': False, 'pct': 5}]
+    steps = [{'text': '正在分析问题…', 'done': False, 'pct': 5}]
     out = [_progress_html(steps)]
 
     decision = supervisor_decide(question)
@@ -91,6 +100,7 @@ def node_supervisor(state: PipelineState) -> dict:
     agent_to_type = {
         "optimization": "optimization",
         "knowledge_qa": "factual",  # 触发 RAG 路径
+        "literature_qa": "literature_qa",  # 触发两阶段文献检索
         "simple_chat": "general_chat",
     }
     first_agent = agent_plan[0] if agent_plan else "knowledge_qa"
@@ -100,12 +110,13 @@ def node_supervisor(state: PipelineState) -> dict:
 
     agent_labels = {
         "optimization": "配煤优化", "knowledge_qa": "知识问答",
+        "literature_qa": "文献综述",
         "simple_chat": "闲聊", "coal_price": "煤价查询",
         "data_management": "数据管理", "oven_control": "焦炉操作",
     }
     plan_display = " → ".join(agent_labels.get(a, a) for a in agent_plan)
     steps[0]['done'] = True
-    steps[0]['text'] = f"Supervisor 路由：{plan_display}"
+    steps[0]['text'] = f"已识别：{plan_display}"
     steps[0]['pct'] = 10
     out.append(_progress_html(steps))
 
@@ -148,6 +159,183 @@ def node_edu_optimization(state: PipelineState) -> dict:
         piece = getattr(delta, "content", None)
         if piece:
             out.append(piece)
+
+    return {"output": out}
+
+
+def node_literature_qa(state: PipelineState) -> dict:
+    """Node: 两阶段文献检索(papers_cards → coking_papers) + 流式回答 + 引用追加。"""
+    from .literature_qa import service as litqa
+    from .llm_client import chat as llm_chat
+
+    question = state["question"]
+    out = []
+
+    # 阶段 0: 中→英查询翻译(向量库 BGE 是英文模型,中文 query 直接查会语义飘移)
+    # translate_query 返回 1-3 个英文候选:[0] 是术语词典预替换的精确版本,
+    # [1][2] 是 LLM paraphrase 的多角度版本。下面 stage1/2 对每个候选都召回再合并。
+    pre = [{'text': '阶段 0/3：翻译检索语句…', 'done': False, 'pct': 10}]
+    out.append(_progress_html(pre))
+    try:
+        translated = translate_query(question)
+        en_queries = translated.get("english_queries") or [question]
+        key_concepts = translated.get("key_concepts") or []
+    except Exception as e:
+        logger.warning(f"[literature_qa] 翻译失败,回落到原文 query: {e}")
+        en_queries = [question]
+        key_concepts = []
+    en_query_head = en_queries[0]
+    pre[0]['done'] = True
+    pre[0]['text'] = (
+        f"翻译完成 → {len(en_queries)} 个候选,首选 {en_query_head[:40]}"
+        f"{'…' if len(en_query_head) > 40 else ''}"
+    )
+    pre[0]['pct'] = 18
+    out.append(_progress_html(pre))
+
+    # 阶段 1: 卡片库定位 — 对每个 en_query 召回再合并(paper_id 去重,score 取 max)
+    # 同时记录 per-query 召回轨迹,给前端知识图谱"EnglishQuery → Paper"边用
+    steps = [{'text': f'阶段 1/3:用 {len(en_queries)} 个查询定位相关 paper…', 'done': False, 'pct': 25}]
+    out.append(_progress_html(steps))
+    papers_by_pid = {}
+    query_recalls: list[dict] = []
+    try:
+        for q in en_queries:
+            recalled = litqa._retrieve_papers(q, n=litqa.DEFAULT_N_PAPERS)
+            query_recalls.append({
+                "query": q,
+                "papers": [
+                    {"paper_id": p.paper_id, "score": round(float(p.score), 3)}
+                    for p in recalled
+                ],
+            })
+            for p in recalled:
+                cur = papers_by_pid.get(p.paper_id)
+                if cur is None or p.score > cur.score:
+                    papers_by_pid[p.paper_id] = p
+    except Exception as e:
+        logger.error(f"[literature_qa] 卡片库检索失败: {e}")
+        out.append(
+            f"\n> ⚠️ 文献卡片库尚未就绪（{e}）。请先在后端目录运行：\n"
+            f"> `python -X utf8 -m deepcoke.literature_qa.build_cards`\n"
+        )
+        return {"output": out}
+
+    if not papers_by_pid:
+        out.append("\n> 文献卡片库未命中相关 paper。\n")
+        return {"output": out}
+
+    papers = sorted(papers_by_pid.values(), key=lambda p: -p.score)[:litqa.DEFAULT_N_PAPERS]
+    steps[0]['done'] = True
+    steps[0]['text'] = f"定位到 {len(papers)} 篇相关文献(多 query 合并)"
+    steps[0]['pct'] = 40
+    out.append(_progress_html(steps))
+
+    # 阶段 2: 限定 paper_id 在 chunk 库取证(对每个 en_query 召回再合并)
+    steps2 = [{'text': '阶段 2/3:在命中文献内检索证据片段…', 'done': False, 'pct': 50}]
+    out.append(_progress_html(steps2))
+    paper_ids = [p.paper_id for p in papers]
+    papers_by_id = {p.paper_id: p for p in papers}
+    # dense + reranker 用英文 query,BM25 用中文原句(jieba 分词,与英文 dense 互补)
+    # 对每个 en_query 跑一次,按 chunk_id 去重、score 取 max,丰富多角度证据
+    chunks_by_id = {}
+    for q in en_queries:
+        for c in litqa._retrieve_chunks_hybrid(
+            q, paper_ids, k=litqa.DEFAULT_K_CHUNKS, bm25_query=question
+        ):
+            cur = chunks_by_id.get(c.chunk_id)
+            if cur is None or c.score > cur.score:
+                chunks_by_id[c.chunk_id] = c
+    # 多 query 合并后再做一次 per-paper 多样化(单 query 内 _retrieve_chunks_hybrid
+    # 已限 PER_PAPER,但多 query 合并去重时不同 chunk_id 同 paper_id 不去重,
+    # 需要在 pipeline 层再压一次,确保 LLM 看到的 chunks 跨多篇 paper 分布)
+    sorted_chunks = sorted(chunks_by_id.values(), key=lambda c: -c.score)
+    chunks = litqa._topk_per_paper(sorted_chunks, litqa.DEFAULT_K_CHUNKS, litqa.PER_PAPER_CHUNKS)
+    for c in chunks:
+        c.paper = papers_by_id.get(c.paper_id)
+
+    if not chunks:
+        out.append("\n> 文献已定位但相应 chunk 不在向量库中。\n")
+        return {"output": out}
+
+    steps2[0]['done'] = True
+    steps2[0]['text'] = f"取到 {len(chunks)} 段证据(来自 {len({c.paper_id for c in chunks})} 篇)"
+    steps2[0]['pct'] = 60
+    out.append(_progress_html(steps2))
+
+    # ── 嵌入结构化 metadata 给前端(用 HTML 注释藏起来,前端解析) ──
+    import json as _json
+    cited_paper_ids = {c.paper_id for c in chunks}
+    meta_payload = {
+        "question": question,
+        "english_queries": en_queries,
+        "key_concepts": key_concepts,
+        "papers": [
+            {
+                "paper_id": p.paper_id,
+                "title": p.title,
+                "authors": p.authors,
+                "year": p.year,
+                "category": p.category,
+                "journal": p.journal,
+                "score": round(p.score, 3),
+                "cited": p.paper_id in cited_paper_ids,
+            }
+            for p in papers
+        ],
+        "chunks": [
+            {
+                "ref": idx,
+                "chunk_id": c.chunk_id,
+                "paper_id": c.paper_id,
+                "section": c.section,
+                "score": round(c.score, 3),
+                "text": (c.text or "")[:1500],
+            }
+            for idx, c in enumerate(chunks, 1)
+        ],
+        "query_recalls": query_recalls,
+    }
+    out.append(f"<!--LITQA_META:{_json.dumps(meta_payload, ensure_ascii=False)}-->\n")
+
+    # 阶段 3: LLM 流式生成回答(自动判定 list/compare/normal mode)
+    prompt, mode = litqa.build_prompt(question, chunks, papers_by_id)
+    mode_label = {
+        'list': '文献清单模式',
+        'compare': '综述/对比模式',
+        'normal': '基于文献片段',
+    }.get(mode, '基于文献片段')
+    steps3 = [{'text': f'阶段 3/3：{mode_label}生成回答…', 'done': False, 'pct': 70}]
+    out.append(_progress_html(steps3))
+
+    answer_parts = []
+    stream = llm_chat([{"role": "user", "content": prompt}], stream=True)
+    # 维护 tail buffer(保留末 20 字)防止术语跨 piece 边界被切碎,
+    # 然后对 yield 出去的部分做术语兜底替换(fix_terms)
+    _fix_buf = ""
+    _BUF_TAIL = 20
+    for ch in stream:
+        if not getattr(ch, "choices", None):
+            continue
+        piece = getattr(ch.choices[0].delta, "content", None)
+        if piece:
+            answer_parts.append(piece)
+            _fix_buf += piece
+            if len(_fix_buf) > _BUF_TAIL:
+                to_yield = fix_terms(_fix_buf[:-_BUF_TAIL])
+                _fix_buf = _fix_buf[-_BUF_TAIL:]
+                if to_yield:
+                    out.append(to_yield)
+    # 流结束:剩余 buffer 也 fix 后 yield
+    if _fix_buf:
+        out.append(fix_terms(_fix_buf))
+
+    # 追加文献引用清单
+    full_answer = fix_terms("".join(answer_parts))
+    cited = litqa._collect_cited_indices(full_answer, len(chunks))
+    appendix = litqa._build_appendix(chunks, cited)
+    if appendix:
+        out.append("\n\n" + appendix)
 
     return {"output": out}
 
@@ -209,9 +397,26 @@ def node_retrieve(state: PipelineState) -> dict:
     out = [_progress_html(steps)]
 
     all_chunks: list[RetrievedChunk] = []
+    # per-query 召回轨迹:记录每个 english_query 召回的 papers + scores,
+    # 给前端知识图谱可视化"检索链路"用(EnglishQuery → Paper 边)
+    query_recalls: list[dict] = []
     for eq in state["english_queries"]:
         chunks = retrieve(eq, top_k=5)
         all_chunks.extend(chunks)
+        per_paper_score: dict[int, float] = {}
+        for c in chunks:
+            if c.paper_id is None:
+                continue
+            cur = per_paper_score.get(c.paper_id)
+            if cur is None or c.score > cur:
+                per_paper_score[c.paper_id] = float(c.score)
+        query_recalls.append({
+            "query": eq,
+            "papers": [
+                {"paper_id": pid, "score": round(s, 3)}
+                for pid, s in sorted(per_paper_score.items(), key=lambda x: -x[1])
+            ],
+        })
 
     # 去重：按 (paper_id, chunk_index) 保留最高分
     seen = {}
@@ -219,14 +424,80 @@ def node_retrieve(state: PipelineState) -> dict:
         key = (c.paper_id, c.chunk_index)
         if key not in seen or c.score > seen[key].score:
             seen[key] = c
-    all_chunks = sorted(seen.values(), key=lambda x: x.score, reverse=True)[:10]
+    # Section 权重 reweighting:让 Methods/Results 优于 Abstract/Preamble/References
+    # (复用 literature_qa.service 里的 _section_weight,统一权重表)
+    from .literature_qa.service import _section_weight
+    for c in seen.values():
+        c.score = c.score * _section_weight(getattr(c, "section", "") or "")
+    sorted_chunks = sorted(seen.values(), key=lambda x: x.score, reverse=True)
+    # Per-paper 多样化:每篇 paper 最多 2 chunks,保证跨文献覆盖
+    # (类 NotebookLM/PaperQA2 思路)
+    PER_PAPER = 2
+    K_TOTAL = 10
+    count_per_pid: dict = {}
+    all_chunks = []
+    for c in sorted_chunks:
+        if count_per_pid.get(c.paper_id, 0) >= PER_PAPER:
+            continue
+        all_chunks.append(c)
+        count_per_pid[c.paper_id] = count_per_pid.get(c.paper_id, 0) + 1
+        if len(all_chunks) >= K_TOTAL:
+            break
 
     steps[0]['done'] = True
     steps[0]['text'] = f"检索到 {len(all_chunks)} 条相关文献片段"
     steps[0]['pct'] = 45
     out.append(_progress_html(steps))
 
-    logger.info(f"[retrieve] {len(all_chunks)} unique chunks")
+    # 输出结构化 metadata 给前端,触发知识图谱渲染
+    # (knowledge_qa 路径也产 LITQA_META,字段与 literature_qa 对齐)
+    import json as _json
+    papers_by_id: dict[int, dict] = {}
+    for c in all_chunks:
+        pid = c.paper_id
+        if pid is None:
+            continue
+        cur = papers_by_id.get(pid)
+        if cur is None or c.score > cur["score"]:
+            authors_val = c.authors
+            if isinstance(authors_val, list):
+                authors_str = ", ".join(str(a) for a in authors_val)
+            else:
+                authors_str = str(authors_val or "")
+            papers_by_id[pid] = {
+                "paper_id": pid,
+                "title": c.title or "",
+                "authors": authors_str,
+                "year": int(c.year) if c.year else 0,
+                "category": c.category or "",
+                "journal": "",
+                "score": round(float(c.score), 3),
+                "cited": True,
+            }
+    papers_list = sorted(papers_by_id.values(), key=lambda p: -p["score"])
+    chunks_meta = [
+        {
+            "ref": i + 1,
+            "chunk_id": f"{c.paper_id}_{c.chunk_index}",
+            "paper_id": c.paper_id,
+            "section": c.section or "",
+            "score": round(float(c.score), 3),
+            "text": (getattr(c, "text", "") or "")[:1500],
+        }
+        for i, c in enumerate(all_chunks)
+    ]
+    meta_payload = {
+        "question": state["question"],
+        "english_queries": state["english_queries"],
+        "key_concepts": state.get("key_concepts", []),
+        "papers": papers_list,
+        "chunks": chunks_meta,
+        "query_recalls": query_recalls,
+    }
+    out.append(f"<!--LITQA_META:{_json.dumps(meta_payload, ensure_ascii=False)}-->\n")
+
+    logger.info(f"[retrieve] {len(all_chunks)} unique chunks, {len(papers_list)} papers, "
+                f"{len(query_recalls)} query recalls in meta")
     return {"chunks": all_chunks, "output": out}
 
 
@@ -310,14 +581,23 @@ def node_generate(state: PipelineState) -> dict:
     if thinking:
         out.append(thinking)
 
-    # 流式生成回答
+    # 流式生成回答(用 tail buffer 防术语跨 piece 切碎,piece-level 兜底替换)
+    _fix_buf = ""
+    _BUF_TAIL = 20
     for piece in generate_answer_stream(
         question=state["question"],
         chunks=state.get("chunks", []),
         kg_context=state.get("kg_context", ""),
         reasoning_trace=state.get("reasoning_trace", ""),
     ):
-        out.append(piece)
+        _fix_buf += piece
+        if len(_fix_buf) > _BUF_TAIL:
+            to_yield = fix_terms(_fix_buf[:-_BUF_TAIL])
+            _fix_buf = _fix_buf[-_BUF_TAIL:]
+            if to_yield:
+                out.append(to_yield)
+    if _fix_buf:
+        out.append(fix_terms(_fix_buf))
 
     return {"output": out}
 
@@ -352,6 +632,8 @@ def route_after_supervisor(state: PipelineState) -> str:
         return "edu_optimization"
     if agent == "simple_chat":
         return "simple_chat"
+    if agent == "literature_qa":
+        return "literature_qa"
     # knowledge_qa 和其他所有类型都走 RAG 路径
     return "translate"
 
@@ -375,6 +657,7 @@ def build_graph() -> StateGraph:
     g.add_node("supervisor", node_supervisor)
     g.add_node("edu_optimization", node_edu_optimization)
     g.add_node("simple_chat", node_simple_chat)
+    g.add_node("literature_qa", node_literature_qa)
     g.add_node("translate", node_translate)
     g.add_node("retrieve", node_retrieve)
     g.add_node("kg_lookup", node_kg_lookup)
@@ -389,12 +672,14 @@ def build_graph() -> StateGraph:
     g.add_conditional_edges("supervisor", route_after_supervisor, {
         "edu_optimization": "edu_optimization",
         "simple_chat": "simple_chat",
+        "literature_qa": "literature_qa",
         "translate": "translate",
     })
 
     # 终止边
     g.add_edge("edu_optimization", END)
     g.add_edge("simple_chat", END)
+    g.add_edge("literature_qa", END)
 
     # RAG 链：translate → retrieve → kg_lookup → (reason | generate) → followup → END
     g.add_edge("translate", "retrieve")

@@ -9,11 +9,30 @@ from .. import config
 logger = logging.getLogger(__name__)
 
 _driver = None
+# 三态:None 未尝试,driver 实例 已连上,False 已尝试且失败(不再重试)
+_disabled_warned = False  # warning 只打一次,避免日志刷屏
+
+
+def _disable_and_warn(reason: str) -> None:
+    """把 Neo4j 标记为不可用,首次给一行 warning,后续静默。"""
+    global _driver, _disabled_warned
+    # 显式关掉旧 driver,避免 neo4j 库吐 ResourceWarning
+    if _driver and _driver is not False:
+        try:
+            _driver.close()
+        except Exception:
+            pass
+    _driver = False
+    if not _disabled_warned:
+        logger.warning(f"Neo4j 不可用,知识图谱步骤跳过:{reason}")
+        _disabled_warned = True
 
 
 def get_driver():
-    """Get or create a Neo4j driver."""
+    """Get or create a Neo4j driver. 失败后缓存 False 不再重试。"""
     global _driver
+    if _driver is False:
+        return None
     if _driver is None:
         try:
             from neo4j import GraphDatabase
@@ -22,16 +41,20 @@ def get_driver():
                 auth=(config.NEO4J_USER, config.NEO4J_PASSWORD),
             )
         except ImportError:
-            logger.warning("neo4j package not installed. KG features disabled.")
+            _disable_and_warn("neo4j package not installed")
             return None
         except Exception as e:
-            logger.warning(f"Could not connect to Neo4j: {e}. KG features disabled.")
+            _disable_and_warn(f"driver init failed ({type(e).__name__})")
             return None
     return _driver
 
 
 def execute_cypher(query: str, params: dict | None = None) -> list[dict[str, Any]]:
-    """Execute a Cypher query and return results as list of dicts."""
+    """Execute a Cypher query and return results as list of dicts.
+
+    连接级错误(ServiceUnavailable / 拒绝连接)→ 静默禁用 Neo4j,返回 [];
+    查询级错误(Cypher 语法等)→ warning 一行,不再打整段 query。
+    """
     driver = get_driver()
     if driver is None:
         return []
@@ -41,7 +64,13 @@ def execute_cypher(query: str, params: dict | None = None) -> list[dict[str, Any
             result = session.run(query, params or {})
             return [record.data() for record in result]
     except Exception as e:
-        logger.error(f"Cypher query error: {e}\nQuery: {query}")
+        # 连接错误:整个 driver 失效,后续直接 short-circuit
+        msg = str(e)
+        if any(s in msg for s in ("Couldn't connect", "ServiceUnavailable", "actively refused",
+                                   "积极拒绝", "Unauthorized")):
+            _disable_and_warn(f"connection lost ({type(e).__name__})")
+            return []
+        logger.warning(f"Cypher 查询错误 ({type(e).__name__}): {msg[:120]}")
         return []
 
 

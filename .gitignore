@@ -31,7 +31,24 @@ node_modules/
 # 数据文件
 llmcoking/src/LLM_back/deepcoke/data/chromadb/
 llmcoking/src/LLM_back/deepcoke/data/bge-base-en-v1.5/
+llmcoking/src/LLM_back/deepcoke/data/bge-reranker-base/
 llmcoking/src/LLM_back/deepcoke/data/papers.db
+llmcoking/src/LLM_back/deepcoke/data/bm25_index.pkl
+
+# 大型静态资源(放 GitHub Release 分发)
+llmcoking/public/static/*.mp4
+
+# 工作过程文件(术语 review 草稿 / ingest 中间产物 / 私人 plan 文件)
+litqa_prep.json
+terms_draft_zh.py
+terms_review.py
+words.js
+
+# 本地特定路径的脚本(用户自己 setup,内含 D:\ 路径,不通用)
+.neo4j-start.bat
+
+# LLM 抽取产物(README 约定:用户自己跑 extract_entities.py 生成)
+llmcoking/src/LLM_back/deepcoke/data/kg_entities.json
 
 # 构建产物
 llmcoking/dist/

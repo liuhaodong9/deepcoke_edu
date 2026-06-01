@@ -25,6 +25,7 @@
           :key="index"
           class="message-row"
           :class="message.type"
+          :data-message-id="message.id"
           ref="lastMessage"
         >
           <!-- bot 头像 -->
@@ -33,9 +34,31 @@
           </div>
 
           <div class="message-bubble">
-            <span v-if="message.text" v-html="renderMarkdown(message.text)"></span>
+            <span v-if="message.text" v-html="renderMarkdown(message.text, message)"></span>
             <div v-else-if="message.type === 'bot'" class="loading-dots">
               <span></span><span></span><span></span>
+            </div>
+            <!-- 流式生成时的实时计时 + token 估算 -->
+            <div v-if="message.streaming" class="gen-stats">
+              <span class="gen-stats-dot"></span>
+              <span class="gen-time">{{ formatElapsed(message.elapsedMs) }}</span>
+              <span class="gen-sep">·</span>
+              <span class="gen-tokens">~{{ message.tokens || 0 }} tokens</span>
+            </div>
+            <!-- 文献检索命中清单(literature_qa 路径才有):用 vis-network 渲染知识图谱 -->
+            <div v-if="message.litqa" class="litqa-panel">
+              <div class="litqa-panel-title">
+                <span class="litqa-icon">📚</span>
+                命中 {{ message.litqa.papers.length }} 篇 · 引用
+                {{ message.litqa.papers.filter(p => p.cited).length }} 篇 · 取证
+                {{ message.litqa.chunks.length }} 段
+                <span class="litqa-hint">· 点节点查看 PDF</span>
+              </div>
+              <div
+                class="litqa-graph"
+                :id="'litqa-graph-' + message.id"
+                :ref="'litqaGraph_' + message.id"
+              ></div>
             </div>
           </div>
         </div>
@@ -93,6 +116,45 @@
       </div>
       <div class="input-footer">内容由 AI 生成，请仔细甄别</div>
     </div>
+
+    <!-- PDF 预览抽屉(右侧滑入) -->
+    <transition name="pdf-drawer">
+      <div v-if="previewPaper" class="pdf-drawer-mask" @click.self="closePdfPreview">
+        <div class="pdf-drawer">
+          <div class="pdf-drawer-header">
+            <div class="pdf-drawer-title-wrap">
+              <div class="pdf-drawer-title">{{ previewPaper.title || '(无标题)' }}</div>
+              <div class="pdf-drawer-meta">
+                <span v-if="previewPaper.year">{{ previewPaper.year }}</span>
+                <span v-if="previewPaper.journal">· {{ previewPaper.journal }}</span>
+                <span v-if="previewPaper.authors && previewPaper.authors !== '[]'">· {{ previewPaper.authors }}</span>
+              </div>
+            </div>
+            <a
+              class="pdf-drawer-newtab"
+              :href="`${apiBaseUrl}/papers/${previewPaper.paper_id}/pdf`"
+              target="_blank"
+              title="新窗口打开"
+            >↗</a>
+            <button class="pdf-drawer-close" @click="closePdfPreview" title="关闭">×</button>
+          </div>
+          <!-- 点 [n] 时附带的引用片段:浅黄高亮显示 LLM 引用的那段 chunk 原文 -->
+          <div v-if="previewChunk && previewChunk.text" class="pdf-drawer-chunk">
+            <div class="pdf-drawer-chunk-head">
+              📌 引用片段 [{{ previewChunk.ref }}]
+              <span v-if="previewChunk.section"> · {{ previewChunk.section }}</span>
+              <span v-if="previewChunk.score"> · 相似度 {{ Math.round(previewChunk.score * 100) }}%</span>
+            </div>
+            <div class="pdf-drawer-chunk-text">{{ previewChunk.text }}</div>
+          </div>
+          <iframe
+            class="pdf-drawer-iframe"
+            :src="pdfViewerSrc()"
+            frameborder="0"
+          ></iframe>
+        </div>
+      </div>
+    </transition>
   </div>
 </template>
 
@@ -102,6 +164,11 @@ import hljs from 'highlight.js'
 import 'highlight.js/styles/github-dark.css'
 import katex from 'katex'
 import 'katex/dist/katex.min.css'
+import { Network, DataSet } from 'vis-network/standalone'
+
+// 简单 uid 生成器:用于给每条 bot 消息一个独立 id,vis-network 容器靠它定位
+let __msgUid = 0
+function nextMsgId () { return `m${Date.now()}_${++__msgUid}` }
 
 export default {
   props: ['sessionId', 'isCollapese'],
@@ -110,6 +177,8 @@ export default {
       messages: [],
       newMessage: '',
       apiBaseUrl: 'http://127.0.0.1:8000',
+      previewPaper: null,
+      previewChunk: null,
       isUserScrolling: false,
       localSessionId: '',
       attachments: [],
@@ -124,10 +193,300 @@ export default {
       ]
     }
   },
+  beforeDestroy () {
+    const el = this.$refs.chatScroll
+    if (el) el.removeEventListener('click', this.onChatClick)
+    window.removeEventListener('keydown', this.onKeydown)
+    // 销毁所有 vis-network 实例,避免内存泄漏
+    if (this._litqaNets) {
+      Object.values(this._litqaNets).forEach(n => { try { n.destroy() } catch (_) {} })
+      this._litqaNets = {}
+    }
+  },
   methods: {
-    renderMarkdown (text) {
+    onChatClick (e) {
+      // 点正文里的 [n] 脚标 → 弹 PDF 抽屉 + 高亮对应 chunk
+      const a = e.target.closest && e.target.closest('a.litqa-cite')
+      if (!a) return
+      e.preventDefault()
+      const ref = parseInt(a.dataset.ref, 10)
+      const paperId = parseInt(a.dataset.paperId, 10)
+      if (!paperId) return
+      const row = a.closest('.message-row')
+      const messageId = row && row.dataset.messageId
+      if (!messageId) return
+      const message = this.messages.find(m => m.id === messageId)
+      if (!message || !message.litqa) return
+      const paper = (message.litqa.papers || []).find(p => p.paper_id === paperId)
+      const chunk = (message.litqa.chunks || []).find(c => c.ref === ref)
+      if (paper) this.openPdfPreview(paper, chunk || null)
+    },
+    openPdfPreview (paper, chunk = null) {
+      this.previewPaper = paper
+      this.previewChunk = chunk
+    },
+    closePdfPreview () {
+      this.previewPaper = null
+      this.previewChunk = null
+    },
+    pdfViewerSrc () {
+      if (!this.previewPaper) return ''
+      const pid = this.previewPaper.paper_id
+      const fileUrl = encodeURIComponent(`${this.apiBaseUrl}/papers/${pid}/pdf`)
+      let url = `/pdfjs/web/viewer.html?file=${fileUrl}`
+      if (this.previewChunk && this.previewChunk.text) {
+        const snippet = this.extractSearchPhrase(this.previewChunk.text)
+        if (snippet) {
+          url += `#search=${encodeURIComponent(snippet)}&phrase=true&highlightAll=true`
+        }
+      }
+      return url
+    },
+    extractSearchPhrase (text) {
+      // 从 chunk 文本提取适合 PDF.js 搜索的代表短语:
+      // 1) 跳 section heading
+      // 2) 按句切分,跳过期刊元数据句(ISSN/DOI/URL/卷期/版权等头部信息)
+      // 3) 取首个有意义的内容句的前 80-120 字
+      if (!text) return ''
+      let s = text.replace(/^\s+/, '')
+      // 跳过常见 section heading
+      s = s.replace(
+        /^(Abstract|Introduction|Background|Materials\s+and\s+Methods?|Methods?|Methodology|Experimental(?:\s+Section)?|Results?(?:\s+and\s+Discussion)?|Discussion|Conclusion[s]?|References?|Preamble)\b[\s\n:.\-—]*/i,
+        ''
+      )
+      // 清理换行/多空格
+      s = s.replace(/\s+/g, ' ').trim()
+
+      // 跳过期刊页眉/元数据句:含 ISSN/DOI/版权/URL/卷期/收稿等关键词的句子
+      const metaRe = /\b(?:ISSN|DOI|doi:|©|Volume\b|Vol\.|Issue\b|Received\b|Accepted\b|Available\s+online|www\.|https?:\/\/|p\.\s*\d|pp\.\s*\d|All rights reserved)\b/i
+      // 按 [. ! ?] + 空格切句
+      const sentences = s.split(/(?<=[.!?])\s+/)
+      // 保留:长度 ≥ 40(过滤短碎句)且不含 metadata 关键词
+      const contentSentences = sentences.filter(
+        sent => sent.length >= 40 && !metaRe.test(sent)
+      )
+
+      const phrase = contentSentences.join(' ').slice(0, 120).trim()
+      if (phrase.length >= 50) return phrase
+
+      // 整段都是 metadata(Preamble / 期刊头 / 作者列表 等):
+      // 不搜索,只打开 PDF。前端黄框已经显示完整 chunk text 给用户对照,
+      // 强行搜索 metadata 短语只会高亮论文头部信息,误导比无高亮还差。
+      return ''
+    },
+    async mountLitqaGraph (message) {
+      if (!message || !message.litqa) return
+      if (!this._litqaNets) this._litqaNets = {}
+      if (this._litqaNets[message.id]) return // 已经 mount 过这条消息的图
+
+      // 等 DOM 渲染好
+      await this.$nextTick()
+      const container = document.getElementById('litqa-graph-' + message.id)
+      if (!container) return
+
+      // ── 客户端拼"检索链路"图(不再调 /paper_graph 那种 Neo4j 论文内容图)──
+      // 4 层节点:Query(中心) → EnglishQuery / Keyword(中间) → Paper(外层)
+      // 边语义:
+      //   Query → EnglishQuery:翻译为
+      //   Query → Keyword:含关键词
+      //   EnglishQuery → Paper:per-query 召回(label=score)
+      //   Keyword → Paper:paper.title 含该 keyword(虚线辅助边)
+      const litqa = message.litqa
+      const papers = litqa.papers || []
+      if (papers.length === 0) return
+      const question = litqa.question || '本次查询'
+      const englishQueries = litqa.english_queries || []
+      const keyConcepts = litqa.key_concepts || []
+      const queryRecalls = litqa.query_recalls || []
+
+      const truncate = (s, n) => (s && s.length > n ? s.slice(0, n) + '…' : (s || ''))
+
+      // ── 节点 ──
+      const nodeList = []
+      nodeList.push({
+        id: 'Q',
+        label: truncate(question, 24),
+        group: 'Query',
+        title: question
+      })
+      englishQueries.forEach((q, i) => {
+        const words = q.split(/\s+/).slice(0, 6).join(' ')
+        nodeList.push({
+          id: `EQ${i}`,
+          label: truncate(words, 36),
+          group: 'EnglishQuery',
+          title: q
+        })
+      })
+      keyConcepts.forEach((kw, i) => {
+        nodeList.push({
+          id: `KW${i}`,
+          label: truncate(kw, 24),
+          group: 'Keyword',
+          title: kw
+        })
+      })
+      papers.forEach(p => {
+        const title = p.title || `Paper ${p.paper_id}`
+        const yearTag = p.year ? `\n(${p.year})` : ''
+        nodeList.push({
+          id: `P${p.paper_id}`,
+          label: truncate(title, 36) + yearTag,
+          group: 'Paper',
+          title,
+          paper_id: p.paper_id,
+          score: p.score
+        })
+      })
+
+      // ── 边 ──
+      const edgeList = []
+      englishQueries.forEach((q, i) => {
+        edgeList.push({ from: 'Q', to: `EQ${i}`, label: '翻译为', arrows: 'to' })
+      })
+      keyConcepts.forEach((kw, i) => {
+        edgeList.push({ from: 'Q', to: `KW${i}`, label: '含关键词', arrows: 'to' })
+      })
+      // EnglishQuery → Paper:per-query 召回链
+      const paperIdsSet = new Set(papers.map(p => p.paper_id))
+      queryRecalls.forEach((qr, qIdx) => {
+        let eqIdx = englishQueries.indexOf(qr.query)
+        if (eqIdx === -1) eqIdx = qIdx
+        if (eqIdx < 0 || eqIdx >= englishQueries.length) return
+        (qr.papers || []).forEach(pp => {
+          if (!paperIdsSet.has(pp.paper_id)) return
+          const s = typeof pp.score === 'number' ? pp.score : 0.5
+          edgeList.push({
+            from: `EQ${eqIdx}`,
+            to: `P${pp.paper_id}`,
+            label: s.toFixed(2),
+            arrows: 'to',
+            value: s
+          })
+        })
+      })
+      // Keyword → Paper:substring 匹配 paper.title
+      papers.forEach(p => {
+        const titleLow = (p.title || '').toLowerCase()
+        if (!titleLow) return
+        keyConcepts.forEach((kw, i) => {
+          if (!kw) return
+          if (titleLow.includes(kw.toLowerCase())) {
+            edgeList.push({
+              from: `KW${i}`,
+              to: `P${p.paper_id}`,
+              arrows: 'to',
+              dashes: true,
+              color: { color: '#f6a3c8', highlight: '#ed64a6' },
+              width: 1
+            })
+          }
+        })
+      })
+
+      const nodes = new DataSet(nodeList)
+      const edges = new DataSet(edgeList)
+      const options = {
+        autoResize: true,
+        height: '360px',
+        nodes: {
+          shape: 'dot',
+          size: 20,
+          borderWidth: 2,
+          font: {
+            size: 12,
+            face: 'Microsoft YaHei, Segoe UI, sans-serif',
+            color: '#1a202c',
+            strokeWidth: 0
+          }
+        },
+        edges: {
+          font: {
+            size: 11,
+            align: 'middle',
+            color: '#4a5568',
+            strokeWidth: 3,
+            strokeColor: '#ffffff'
+          },
+          smooth: { type: 'continuous' },
+          arrows: { to: { enabled: true, scaleFactor: 0.5 } },
+          width: 1.2,
+          color: { color: '#a0aec0', highlight: '#4a90e2' }
+        },
+        groups: {
+          Query: {
+            color: { background: '#718096', border: '#2d3748' },
+            shape: 'diamond',
+            size: 26,
+            font: { color: '#ffffff' }
+          },
+          EnglishQuery: {
+            color: { background: '#9f7aea', border: '#6b46c1' },
+            shape: 'dot',
+            size: 22,
+            font: { color: '#ffffff' }
+          },
+          Keyword: {
+            color: { background: '#ed64a6', border: '#b83280' },
+            shape: 'dot',
+            size: 18,
+            font: { color: '#ffffff' }
+          },
+          Paper: {
+            color: { background: '#4299e1', border: '#2b6cb0' },
+            shape: 'dot',
+            size: 22,
+            font: { color: '#ffffff' }
+          }
+        },
+        physics: {
+          enabled: true,
+          barnesHut: {
+            gravitationalConstant: -7000,
+            springLength: 140,
+            springConstant: 0.04,
+            damping: 0.3
+          },
+          stabilization: { iterations: 220, fit: true }
+        },
+        interaction: {
+          hover: true,
+          tooltipDelay: 200,
+          dragNodes: true,
+          zoomView: true
+        }
+      }
+
+      const net = new Network(container, { nodes, edges }, options)
+      this._litqaNets[message.id] = net
+
+      // 点 Paper 节点 → 弹 PDF
+      net.on('click', (params) => {
+        if (params.nodes.length === 0) return
+        const nid = params.nodes[0]
+        const node = nodes.get(nid)
+        if (node && node.group === 'Paper' && node.paper_id) {
+          const paper = papers.find(p => p.paper_id === node.paper_id)
+          if (paper) this.openPdfPreview(paper)
+        }
+      })
+    },
+    onKeydown (e) {
+      if (e.key === 'Escape' && this.previewPaper) {
+        this.closePdfPreview()
+      }
+    },
+    renderMarkdown (text, message) {
       const detailsPlaceholders = []
-      let preprocessed = text.replace(/<\/?(?:details|summary)[^>]*>/gi, (match) => {
+      // 先保护整段 progress 块(避免内部 < > 被 marked 前的转义吞掉)。
+      // 后端 _progress_html 固定以 </div>\n\n 收尾,non-greedy 配 \n\n 锚点能稳定匹配
+      // 整个最外层 pipeline-progress div(中间嵌套的 </div> 不会被 \n\n 命中)
+      let preprocessed = text.replace(/<div class="pipeline-progress">[\s\S]*?<\/div>\n\n/g, (match) => {
+        const idx = detailsPlaceholders.length
+        detailsPlaceholders.push(match)
+        return `__DETAILS_PH_${idx}__`
+      })
+      preprocessed = preprocessed.replace(/<\/?(?:details|summary)[^>]*>/gi, (match) => {
         const idx = detailsPlaceholders.length
         detailsPlaceholders.push(match)
         return `__DETAILS_PH_${idx}__`
@@ -150,14 +509,16 @@ export default {
             displayMode: true
           })
         })
-        .replace(/(^|[^\d])\$(\S+?)\$(?!\d)/g, (_, before, equation) => {
+        // 行内公式:用 [^\$\n]+? 允许公式内含空格(原 \S+? 不匹配 `$a, b, c$` 这种)
+        // (^|[^\d]) 前置非数字,(?!\d) 后置非数字 — 避免误吃 `$100` 这种货币
+        .replace(/(^|[^\d])\$([^$\n]+?)\$(?!\d)/g, (_, before, equation) => {
           return before + katex.renderToString(equation.trim(), {
             throwOnError: false,
             displayMode: false
           })
         })
 
-      const html = marked(preprocessed, {
+      let html = marked(preprocessed, {
         breaks: true,
         gfm: true,
         highlight: function (code, lang) {
@@ -166,6 +527,18 @@ export default {
         }
       })
 
+      // 文献引用 [n] → 可点击锚点(只在 litqa 消息上做)
+      if (message && message.litqa && Array.isArray(message.litqa.chunks)) {
+        const refToPid = {}
+        for (const c of message.litqa.chunks) refToPid[c.ref] = c.paper_id
+        html = html.replace(/\[(\d+)\](?!\()/g, (m, n) => {
+          const ref = parseInt(n)
+          const pid = refToPid[ref] || ''
+          if (!pid) return m
+          return `<a class="litqa-cite" data-ref="${ref}" data-paper-id="${pid}" href="#">[${ref}]</a>`
+        })
+      }
+
       return html
     },
     scrollToBottom () {
@@ -173,6 +546,14 @@ export default {
         const el = this.$refs.chatScroll
         if (el) el.scrollTop = el.scrollHeight
       })
+    },
+    formatElapsed (ms) {
+      if (!ms || ms < 100) return '0.0s'
+      if (ms < 60000) return (ms / 1000).toFixed(1) + 's'
+      const s = Math.floor(ms / 1000)
+      const min = Math.floor(s / 60)
+      const sec = (s % 60).toString().padStart(2, '0')
+      return `${min}m${sec}s`
     },
     openFilePicker () {
       if (this.$refs.filePicker) this.$refs.filePicker.click()
@@ -232,10 +613,26 @@ export default {
       if (!this.newMessage.trim()) return
       const userText = this.newMessage
       this.newMessage = ''
-      this.messages.push({ text: userText, type: 'user' })
+      this.messages.push({ text: userText, type: 'user', id: nextMsgId() })
 
-      const botMessage = { text: '', type: 'bot' }
+      const botMessage = {
+        text: '',
+        type: 'bot',
+        id: nextMsgId(),
+        streaming: true,
+        startTime: Date.now(),
+        elapsedMs: 0,
+        tokens: 0
+      }
       this.messages.push(botMessage)
+      // 实时更新 elapsedMs(每 200ms 刷一次)
+      const timerId = setInterval(() => {
+        if (!botMessage.streaming) {
+          clearInterval(timerId)
+          return
+        }
+        botMessage.elapsedMs = Date.now() - botMessage.startTime
+      }, 200)
       this.scrollToBottom()
 
       let sessionToUse = this.sessionId
@@ -261,6 +658,7 @@ export default {
         const decoder = new TextDecoder()
         let botReply = ''
         let progressBlock = ''
+        const LITQA_META_RE = /<!--LITQA_META:([\s\S]*?)-->\s*/
 
         while (true) {
           const { value, done } = await reader.read()
@@ -272,10 +670,35 @@ export default {
             botMessage.text = progressBlock
           } else {
             botReply += chunk
+            // 截获结构化文献元数据(literature_qa 路径才有)
+            if (!botMessage.litqa) {
+              const m = botReply.match(LITQA_META_RE)
+              if (m) {
+                try {
+                  this.$set(botMessage, 'litqa', JSON.parse(m[1]))
+                  // 文献元数据就绪 → DOM 渲染后挂载知识图谱
+                  this.$nextTick(() => this.mountLitqaGraph(botMessage))
+                } catch (e) {
+                  console.warn('parse LITQA_META failed', e)
+                }
+                botReply = botReply.replace(LITQA_META_RE, '')
+              }
+            }
             botMessage.text = progressBlock + botReply
           }
+          // token 粗估:中文 1 char ≈ 1.5 token,英文 1 char ≈ 0.25 token,取平均
+          botMessage.tokens = Math.round(botReply.length * 1.2)
+          botMessage.elapsedMs = Date.now() - botMessage.startTime
           this.$nextTick(() => this.scrollToBottom())
         }
+
+        // 流式响应结束:停 spinner(把所有 pending progress-step 改成 done)+ 关闭计时
+        botMessage.streaming = false
+        botMessage.elapsedMs = Date.now() - botMessage.startTime
+        botMessage.text = botMessage.text.replace(
+          /<div class="progress-step pending">([^<]*)<\/div>/g,
+          '<div class="progress-step done">✅ $1</div>'
+        )
 
         if (this.voiceMode && botReply.trim()) this.speak(botReply)
       } catch (error) {
@@ -328,8 +751,15 @@ export default {
     }
   },
   mounted () {
+    // 文献引用 [n] 点击 → 高亮对应文献卡片(全局事件委托)
+    this.$nextTick(() => {
+      const el = this.$refs.chatScroll
+      if (el) el.addEventListener('click', this.onChatClick)
+    })
+    // ESC 关闭 PDF 预览
+    window.addEventListener('keydown', this.onKeydown)
     if (this.sessionId === 'new') {
-      const botMessage = { text: '', type: 'bot' }
+      const botMessage = { text: '', type: 'bot', id: nextMsgId() }
       this.messages.push(botMessage)
       this.streamReply(botMessage, '您好！我是焦化大语言智能问答与分析系统DeepCoke，有什么可以帮助你的？')
     } else {
@@ -340,6 +770,362 @@ export default {
 </script>
 
 <style scoped>
+/* ─── Pipeline 进度条:用旋转 spinner 代替百分比/bar ─── */
+/* 后端 _progress_html 仍然发 .progress-bar-wrap / .progress-pct 等元素,
+   这里全部隐藏,只保留 .progress-step 文本。pending 状态用 CSS spinner
+   替代静态 ⏳ emoji(后端 pending 不发 emoji,done 仍发 ✅)。 */
+::v-deep .pipeline-progress {
+  margin: 4px 0;
+  padding: 6px 10px;
+  background: #fafbfc;
+  border-left: 3px solid #c7d3e0;
+  border-radius: 4px;
+  font-size: 13px;
+  color: #5a6878;
+}
+::v-deep .pipeline-progress .progress-bar-wrap,
+::v-deep .pipeline-progress .progress-bar-fill,
+::v-deep .pipeline-progress .progress-pct,
+::v-deep .pipeline-progress .progress-pct-done {
+  display: none !important;
+}
+::v-deep .pipeline-progress .progress-step {
+  display: flex;
+  align-items: center;
+  line-height: 1.6;
+  padding: 1px 0;
+}
+::v-deep .pipeline-progress .progress-step.pending {
+  color: #4a90e2;
+}
+::v-deep .pipeline-progress .progress-step.pending::before {
+  content: '';
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  margin-right: 8px;
+  border: 2px solid #d0d7e2;
+  border-top-color: #4a90e2;
+  border-radius: 50%;
+  animation: dc-spinner-rotate 0.8s linear infinite;
+  flex-shrink: 0;
+}
+::v-deep .pipeline-progress .progress-step.done {
+  color: #38a169;
+}
+@keyframes dc-spinner-rotate {
+  to { transform: rotate(360deg); }
+}
+
+/* 生成过程的实时统计:时间 + token 估算 */
+.gen-stats {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  margin-bottom: 6px;
+  background: #eef4ff;
+  border-radius: 12px;
+  font-size: 12px;
+  color: #4a5568;
+  font-family: "JetBrains Mono", "SF Mono", Consolas, monospace;
+  letter-spacing: 0.2px;
+}
+.gen-stats-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #4a90e2;
+  animation: dc-stats-pulse 1.2s ease-in-out infinite;
+}
+.gen-time {
+  font-weight: 600;
+  color: #2c5282;
+}
+.gen-sep {
+  color: #a0aec0;
+}
+.gen-tokens {
+  color: #5a6878;
+}
+@keyframes dc-stats-pulse {
+  0%, 100% { opacity: 0.4; transform: scale(0.85); }
+  50% { opacity: 1; transform: scale(1.15); }
+}
+
+/* ─── 文献检索命中清单 (literature_qa) ─── */
+/* emoji 字体 fallback: 让 📚📄✓⏳✅ 等正常显示而不是豆腐 */
+.litqa-panel,
+::v-deep .message-bubble {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei",
+               "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji",
+               sans-serif;
+}
+.litqa-panel {
+  margin-top: 14px;
+  padding: 12px 14px;
+  background: #f6f9fc;
+  border: 1px solid #e1ecf4;
+  border-left: 3px solid #4a90e2;
+  border-radius: 8px;
+  font-size: 12.5px;
+}
+.litqa-panel-title {
+  font-weight: 600;
+  color: #2c5282;
+  margin-bottom: 10px;
+  font-size: 13px;
+}
+.litqa-icon {
+  margin-right: 4px;
+}
+.litqa-hint {
+  font-weight: 400;
+  color: #718096;
+  font-size: 12px;
+  margin-left: 6px;
+}
+/* vis-network 知识图谱容器 */
+.litqa-graph {
+  width: 100%;
+  height: 340px;
+  background: #fdfdfe;
+  border: 1px solid #e5edf5;
+  border-radius: 6px;
+  position: relative;
+  overflow: hidden;
+}
+.litqa-papers {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 8px;
+}
+.litqa-paper {
+  padding: 8px 10px;
+  background: #fff;
+  border: 1px solid #e5edf5;
+  border-radius: 6px;
+  transition: border-color 0.18s, box-shadow 0.18s, background 0.4s;
+  position: relative;
+}
+.litqa-paper:hover {
+  border-color: #b6cce4;
+  box-shadow: 0 1px 5px rgba(74, 144, 226, 0.12);
+}
+.litqa-paper.cited {
+  background: #f0f7ff;
+  border-color: #b6d2ee;
+}
+.litqa-paper.cited::before {
+  content: '✓';
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  color: #4a90e2;
+  font-weight: 700;
+  font-size: 11px;
+}
+.litqa-paper.litqa-flash {
+  background: #fff7d6;
+  border-color: #f0c75e;
+  box-shadow: 0 0 0 2px rgba(240, 199, 94, 0.4);
+}
+.litqa-paper-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+.litqa-paper-title {
+  flex: 1;
+  font-weight: 600;
+  color: #1a3556;
+  line-height: 1.35;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.litqa-pdf-link {
+  font-size: 14px;
+  text-decoration: none;
+  opacity: 0.55;
+  cursor: pointer;
+  transition: opacity 0.15s, transform 0.15s;
+  flex-shrink: 0;
+}
+.litqa-pdf-link:hover {
+  opacity: 1;
+  transform: scale(1.15);
+}
+.litqa-paper-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  color: #6b7c93;
+  font-size: 11.5px;
+  margin-bottom: 3px;
+}
+.litqa-journal {
+  font-style: italic;
+  color: #4a6585;
+}
+.litqa-category {
+  color: #8a96a6;
+}
+.litqa-score {
+  margin-left: auto;
+  color: #4a90e2;
+  font-weight: 500;
+}
+.litqa-paper-authors {
+  color: #94a3b8;
+  font-size: 11px;
+  font-style: italic;
+  line-height: 1.3;
+  display: -webkit-box;
+  -webkit-line-clamp: 1;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* 正文里的引用 [n] */
+:deep(a.litqa-cite) {
+  color: #4a90e2;
+  text-decoration: none;
+  font-weight: 600;
+  font-size: 0.85em;
+  padding: 1px 3px;
+  border-radius: 3px;
+  background: rgba(74, 144, 226, 0.08);
+  margin: 0 1px;
+  cursor: pointer;
+}
+:deep(a.litqa-cite:hover) {
+  background: rgba(74, 144, 226, 0.2);
+}
+
+/* ─── PDF 预览抽屉(右侧滑入) ─── */
+.pdf-drawer-mask {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  z-index: 10000;
+  display: flex;
+  justify-content: flex-end;
+}
+.pdf-drawer {
+  width: 70vw;
+  max-width: 1200px;
+  min-width: 600px;
+  height: 100vh;
+  background: #1a1a1a;
+  display: flex;
+  flex-direction: column;
+  box-shadow: -8px 0 32px rgba(0, 0, 0, 0.5);
+}
+.pdf-drawer-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 18px;
+  border-bottom: 1px solid #2a2a2a;
+  background: #222;
+}
+.pdf-drawer-title-wrap {
+  flex: 1;
+  min-width: 0;
+}
+.pdf-drawer-title {
+  color: #e8e8e8;
+  font-size: 14.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pdf-drawer-meta {
+  color: #888;
+  font-size: 11.5px;
+  margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pdf-drawer-newtab,
+.pdf-drawer-close {
+  background: transparent;
+  border: 1px solid #3a3a3a;
+  color: #b0b0b0;
+  width: 30px;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  border-radius: 6px;
+  font-size: 16px;
+  text-decoration: none;
+  transition: all 0.15s;
+  flex-shrink: 0;
+}
+.pdf-drawer-newtab:hover,
+.pdf-drawer-close:hover {
+  background: #2e2e2e;
+  color: #fff;
+  border-color: #4a90e2;
+}
+.pdf-drawer-close {
+  font-size: 22px;
+  line-height: 1;
+}
+.pdf-drawer-iframe {
+  flex: 1;
+  width: 100%;
+  background: #fff;
+}
+/* 点 [n] 弹 PDF 时显示的引用片段高亮框 */
+.pdf-drawer-chunk {
+  margin: 10px 14px;
+  padding: 10px 12px;
+  background: #fff8d6;
+  border-left: 4px solid #f6e05e;
+  border-radius: 4px;
+  font-size: 13px;
+  line-height: 1.55;
+  max-height: 180px;
+  overflow-y: auto;
+}
+.pdf-drawer-chunk-head {
+  font-weight: 600;
+  color: #744210;
+  margin-bottom: 6px;
+  font-size: 12px;
+}
+.pdf-drawer-chunk-text {
+  color: #1a202c;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* 滑入动画 */
+.pdf-drawer-enter-active,
+.pdf-drawer-leave-active {
+  transition: opacity 0.22s;
+}
+.pdf-drawer-enter-active .pdf-drawer,
+.pdf-drawer-leave-active .pdf-drawer {
+  transition: transform 0.28s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.pdf-drawer-enter,
+.pdf-drawer-leave-to {
+  opacity: 0;
+}
+.pdf-drawer-enter .pdf-drawer,
+.pdf-drawer-leave-to .pdf-drawer {
+  transform: translateX(100%);
+}
+
 /* ===== 整体布局 ===== */
 .chat-wrapper {
   display: flex;
@@ -653,6 +1439,22 @@ export default {
   line-height: 1.5;
   background: transparent !important;
   color: #e0e0e0;
+  /* 完全隐藏滚动条(箭头 + 滑块),保留鼠标滚轮/键盘滚动功能 */
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+::v-deep .el-textarea__inner::-webkit-scrollbar {
+  width: 0 !important;
+  height: 0 !important;
+  display: none;
+}
+::v-deep .el-textarea__inner::-webkit-scrollbar-button,
+::v-deep .el-textarea__inner::-webkit-scrollbar-thumb,
+::v-deep .el-textarea__inner::-webkit-scrollbar-track,
+::v-deep .el-textarea__inner::-webkit-scrollbar-track-piece,
+::v-deep .el-textarea__inner::-webkit-scrollbar-corner {
+  display: none !important;
+  background: transparent !important;
 }
 
 ::v-deep .el-textarea__inner::placeholder {

@@ -337,6 +337,43 @@ python -c "import escargot; from escargot.controller.controller import Controlle
 
 打印 `ok -> D:\escargot\escargot\__init__.py` 即通过。
 
+### 4. 常见报错:Wheel 版本与 Python 不匹配
+
+ESCARGOT 自己是纯 Python,但它的链上依赖 `raphtory`(Rust 扩展)和 `pymgclient`(C 扩展)都带原生 `.pyd`。如果 conda env 中途升降级过 Python(比如曾经是 3.11,后来重建成 3.10),pip 缓存或上一次的安装会留下版本错配的 `.pyd`,这时 `### 3. 验证` 那条命令会报**这两种错之一**,而不是 README 上面写的 `No module named 'escargot'`:
+
+```
+ModuleNotFoundError: No module named 'raphtory._raphtory'
+ModuleNotFoundError: No module named 'mgclient'
+```
+
+更隐蔽的是后端启动日志里只会看到 `ESCARGOT not available: No module named 'raphtory._raphtory'` 这种"半截信息",很容易误以为 ESCARGOT 本身没装。
+
+**诊断**:看 `site-packages` 里 `.pyd` 文件名后缀。比如 `_raphtory.cp311-win_amd64.pyd` 说明这个 wheel 是给 Python 3.11 编的,但你当前 env 是 3.10,自然 import 不到:
+
+```bash
+ls D:\anaconda3\envs\deepcoke\Lib\site-packages\raphtory\*.pyd
+ls D:\anaconda3\envs\deepcoke\Lib\site-packages\mgclient*.pyd
+```
+
+**修法**(以 deepcoke env 是 Python 3.10 为例,版本号按需替换):
+
+```bash
+conda activate deepcoke
+
+# 1) 显式拉 cp310 wheel,绕过 pip 自动选错版本
+pip download --no-deps --only-binary=:all: ^
+  --python-version 310 --platform win_amd64 --dest D:/tmp_wheels ^
+  raphtory==0.16.3 pymgclient
+
+# 2) 用本地 wheel 强制覆盖现有安装
+pip install --force-reinstall --no-deps D:/tmp_wheels/raphtory-0.16.3-cp310-cp310-win_amd64.whl
+pip install --force-reinstall --no-deps D:/tmp_wheels/pymgclient-1.5.2-cp310-cp310-win_amd64.whl
+```
+
+> **关于 raphtory 版本**:GitHub 主分支版本号已经到 0.17.x,但 PyPI 只发布到 0.16.3,所以这里固定到 0.16.3。ESCARGOT 自己的 `pyproject.toml` 没把 raphtory 列进依赖,源码里只用到 `from raphtory import Graph` 这个稳定 API,0.16.3 完全够用。
+
+修完重新跑 `### 3. 验证` 那条命令,看到 `ok -> D:\escargot\escargot\__init__.py` 才算真通过。
+
 启动文本后端后,跑一句 knowledge_qa 类问题(如「CRI 和 CSR 有什么区别」),终端日志里如果**没有** `ESCARGOT not available` 那一行,且回答正文里出现 `> **深度推理 (ESCARGOT):**` 引用块,则整条链路工作正常。
 
 ## 语音后端配置

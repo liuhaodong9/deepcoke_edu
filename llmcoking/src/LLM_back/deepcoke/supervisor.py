@@ -16,6 +16,7 @@ AGENT_DESCRIPTIONS = {
     "optimization":    "配煤优化 — 优化配煤比例、预测焦炭质量(CRI/CSR/M10/M25)、寻找最优配方",
     "data_management": "数据管理 — 煤样数据的增删改查、CNN预测",
     "knowledge_qa":    "知识问答 — 焦化领域文献检索、学术问答、因果分析、工艺流程",
+    "literature_qa":   "文献综述 — 基于本地 PDF 文献库,先定位相关文献再回答,回答里给出文献引用",
     "simple_chat":     "闲聊 — 问候、闲聊、非焦化领域话题",
 }
 
@@ -28,6 +29,7 @@ _SUPERVISOR_PROMPT = """你是 DeepCoke 焦化配煤机器人的调度主管（S
 - optimization: 配煤优化 — 优化配煤比例、预测焦炭质量(CRI/CSR/M10/M25)、寻找最优配方
 - data_management: 数据管理 — 煤样数据的增删改查、CNN预测
 - knowledge_qa: 知识问答 — 焦化领域文献检索、学术问答、因果分析、工艺流程
+- literature_qa: 文献综述 — 基于本地 PDF 文献库,先定位相关文献再回答,回答里给出文献引用。当问题明确涉及"文献"、"paper"、"综述"、"研究表明"、"引用"或要求"基于文献回答"时优先此项
 - simple_chat: 闲聊 — 问候、闲聊、非焦化领域话题
 
 规则：
@@ -68,6 +70,15 @@ def _quick_classify(question: str) -> list[str] | None:
     # 简单问候
     if re.search(r"^(你好|hi|hello|嗨|早|在吗|你是谁)\s*[?？!！。.]*$", question, re.IGNORECASE):
         return ["simple_chat"]
+
+    # 文献综述类(用户显式提"文献"/"paper"/"综述"等)
+    if re.search(
+        r"文献|paper|literature|综述|review|引用|研究表明|学界|学术(?!氛围)"
+        r"|基于.*文献|根据.*文献|查.*文献|引一下|引几篇",
+        question,
+        re.IGNORECASE,
+    ):
+        return ["literature_qa"]
 
     return None  # 需要 LLM 决策
 

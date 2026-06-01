@@ -342,7 +342,6 @@ export default {
       this.lastStartError = ''
       this.startCallTimer()
       this.panelVisible = true
-
     },
 
     async getMicStreamWithFallback () {

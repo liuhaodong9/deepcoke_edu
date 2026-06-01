@@ -16,6 +16,8 @@
     "markdown-it": "^14.1.0",
     "marked": "^4.0.10",
     "mermaid": "^11.5.0",
+    "pdfjs-dist": "^6.0.227",
+    "vis-network": "^10.1.0",
     "vue": "^2.6.14",
     "vue-router": "^3.5.1"
   },

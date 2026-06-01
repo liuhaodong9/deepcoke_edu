@@ -64,6 +64,20 @@ def extract_entities(title, abstract, keywords):
                 "properties": [], "concept_relations": []}
 
 
+def _parse_list_field(raw: str | None) -> list[str]:
+    """papers.db 历史数据兼容:authors / keywords 可能是 JSON 数组也可能是逗号分隔字符串。"""
+    if not raw:
+        return []
+    s = raw.strip()
+    if s.startswith("["):
+        try:
+            v = json.loads(s)
+            return [str(x).strip() for x in v if str(x).strip()]
+        except json.JSONDecodeError:
+            pass
+    return [a.strip() for a in s.split(",") if a.strip()]
+
+
 def run():
     papers_db = config.DATA_DIR / "papers.db"
     output_file = config.DATA_DIR / "kg_entities.json"
@@ -97,9 +111,11 @@ def run():
             continue
 
         title = row["title"] or ""
-        authors = json.loads(row["authors"]) if row["authors"] else []
+        # authors/keywords 在 papers.db 中可能是 JSON 字符串(`["A","B"]`)
+        # 也可能是逗号分隔的原始字符串(`"A, B"`)— 两种都接住
+        authors = _parse_list_field(row["authors"])
         abstract = row["abstract"] or ""
-        keywords = json.loads(row["keywords"]) if row["keywords"] else []
+        keywords = _parse_list_field(row["keywords"])
         year = row["year"]
 
         print(f"[{i}/{total}] {title[:60]}")
