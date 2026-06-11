@@ -132,7 +132,7 @@
             </div>
             <a
               class="pdf-drawer-newtab"
-              :href="`${apiBaseUrl}/papers/${previewPaper.paper_id}/pdf`"
+              :href="apiUrlWithToken('/papers/' + previewPaper.paper_id + '/pdf')"
               target="_blank"
               title="新窗口打开"
             >↗</a>
@@ -148,10 +148,18 @@
             <div class="pdf-drawer-chunk-text">{{ previewChunk.text }}</div>
           </div>
           <iframe
+            v-if="previewPdfBlobUrl && !previewPdfError"
             class="pdf-drawer-iframe"
             :src="pdfViewerSrc()"
             frameborder="0"
           ></iframe>
+          <div v-else-if="previewPdfError" class="pdf-drawer-fallback">
+            <div class="pdf-drawer-fallback-icon">📄</div>
+            <div class="pdf-drawer-fallback-text">{{ previewPdfError }}</div>
+          </div>
+          <div v-else class="pdf-drawer-fallback">
+            <div class="pdf-drawer-fallback-text">正在加载 PDF…</div>
+          </div>
         </div>
       </div>
     </transition>
@@ -161,6 +169,7 @@
 <script>
 import { marked } from 'marked'
 import hljs from 'highlight.js'
+import { apiFetch, apiUrlWithToken } from '../api'
 import 'highlight.js/styles/github-dark.css'
 import katex from 'katex'
 import 'katex/dist/katex.min.css'
@@ -176,9 +185,14 @@ export default {
     return {
       messages: [],
       newMessage: '',
-      apiBaseUrl: 'http://127.0.0.1:8000',
+      // baseURL 走相对路径（dev: vue.config.js proxy，prod: nginx 反代）
+      // PDF iframe/直链用 apiUrlWithToken('/papers/X/pdf') 拼带 token 的 URL
       previewPaper: null,
       previewChunk: null,
+      // PDF 预览 blob URL: 预 fetch 后存 blob,viewer.html?file= 拿 blob: URL 避开 ?token= 编码问题
+      previewPdfBlobUrl: '',
+      // PDF 加载错误信息: 服务器上 PDF 文件缺失时(404)给用户降级提示
+      previewPdfError: '',
       isUserScrolling: false,
       localSessionId: '',
       attachments: [],
@@ -204,35 +218,70 @@ export default {
     }
   },
   methods: {
-    onChatClick (e) {
-      // 点正文里的 [n] 脚标 → 弹 PDF 抽屉 + 高亮对应 chunk
-      const a = e.target.closest && e.target.closest('a.litqa-cite')
-      if (!a) return
-      e.preventDefault()
-      const ref = parseInt(a.dataset.ref, 10)
-      const paperId = parseInt(a.dataset.paperId, 10)
-      if (!paperId) return
-      const row = a.closest('.message-row')
-      const messageId = row && row.dataset.messageId
-      if (!messageId) return
-      const message = this.messages.find(m => m.id === messageId)
-      if (!message || !message.litqa) return
-      const paper = (message.litqa.papers || []).find(p => p.paper_id === paperId)
-      const chunk = (message.litqa.chunks || []).find(c => c.ref === ref)
-      if (paper) this.openPdfPreview(paper, chunk || null)
+    // 暴露 api helper 给 template 用(:href="apiUrlWithToken(...)")
+    apiUrlWithToken (url) {
+      return apiUrlWithToken(url)
     },
-    openPdfPreview (paper, chunk = null) {
+    onChatClick (e) {
+      const target = e.target
+      if (!target || !target.closest) return
+
+      // [N] 论文引用 → 弹 PDF 抽屉
+      // 自动取该 paper 在 LITQA_META.chunks 里 score 最高的 chunk 做 PDF 高光
+      // (LLM 只输出 [N], 不再写 [#N]; chunk 高光由前端自动选择)
+      const a = target.closest('a.litqa-cite')
+      if (a) {
+        e.preventDefault()
+        const paperId = parseInt(a.dataset.paperId, 10)
+        if (!paperId) return
+        const row = a.closest('.message-row')
+        const messageId = row && row.dataset.messageId
+        if (!messageId) return
+        const message = this.messages.find(m => m.id === messageId)
+        if (!message || !message.litqa) return
+        const paper = (message.litqa.papers || []).find(p => p.paper_id === paperId)
+        if (!paper) return
+        // 取该 paper 排序最高的 chunk(LITQA_META.chunks 已按 score 降序)
+        const topChunk = (message.litqa.chunks || []).find(c => c.paper_id === paperId)
+        this.openPdfPreview(paper, topChunk || null)
+      }
+    },
+    async openPdfPreview (paper, chunk = null) {
       this.previewPaper = paper
       this.previewChunk = chunk
+      this.previewPdfError = ''
+      // 预 fetch PDF 拿 blob URL,viewer 拿 blob: 协议 URL 不会被 ?token= 编码问题影响
+      try {
+        if (this.previewPdfBlobUrl) {
+          URL.revokeObjectURL(this.previewPdfBlobUrl)
+          this.previewPdfBlobUrl = ''
+        }
+        const resp = await fetch(apiUrlWithToken('/papers/' + paper.paper_id + '/pdf'))
+        if (!resp.ok) {
+          this.previewPdfError = resp.status === 404
+            ? 'PDF 原文未同步到服务器(可参考下方引用片段与论文元数据)'
+            : `PDF 加载失败(HTTP ${resp.status})`
+          throw new Error('PDF fetch failed: ' + resp.status)
+        }
+        const blob = await resp.blob()
+        this.previewPdfBlobUrl = URL.createObjectURL(blob)
+      } catch (e) {
+        if (!this.previewPdfError) this.previewPdfError = 'PDF 加载失败:' + e.message
+        console.error('[pdf-preview] load failed:', e)
+      }
     },
     closePdfPreview () {
       this.previewPaper = null
       this.previewChunk = null
+      this.previewPdfError = ''
+      if (this.previewPdfBlobUrl) {
+        URL.revokeObjectURL(this.previewPdfBlobUrl)
+        this.previewPdfBlobUrl = ''
+      }
     },
     pdfViewerSrc () {
-      if (!this.previewPaper) return ''
-      const pid = this.previewPaper.paper_id
-      const fileUrl = encodeURIComponent(`${this.apiBaseUrl}/papers/${pid}/pdf`)
+      if (!this.previewPaper || !this.previewPdfBlobUrl) return ''
+      const fileUrl = encodeURIComponent(this.previewPdfBlobUrl)
       let url = `/pdfjs/web/viewer.html?file=${fileUrl}`
       if (this.previewChunk && this.previewChunk.text) {
         const snippet = this.extractSearchPhrase(this.previewChunk.text)
@@ -269,10 +318,10 @@ export default {
       const phrase = contentSentences.join(' ').slice(0, 120).trim()
       if (phrase.length >= 50) return phrase
 
-      // 整段都是 metadata(Preamble / 期刊头 / 作者列表 等):
-      // 不搜索,只打开 PDF。前端黄框已经显示完整 chunk text 给用户对照,
-      // 强行搜索 metadata 短语只会高亮论文头部信息,误导比无高亮还差。
-      return ''
+      // Fallback: 整段是 metadata(标题/作者/期刊头)时,用清理后 text 前 80 字保底,
+      // 至少让 PDF.js 跳到论文头部 + 高亮标题,比完全无高光更直观。
+      // (deep_summary [#N] 编号跟实际 chunk 偶尔不对齐时的兜底)
+      return s.slice(0, 80).trim()
     },
     async mountLitqaGraph (message) {
       if (!message || !message.litqa) return
@@ -527,15 +576,34 @@ export default {
         }
       })
 
-      // 文献引用 [n] → 可点击锚点(只在 litqa 消息上做)
+      // 文献引用 [n] → 可点击锚点(只在 litqa 消息上做),hover 时显示原句前段
       if (message && message.litqa && Array.isArray(message.litqa.chunks)) {
+        // ref → paper_id 映射 + ref → hover preview(取 score 最高的 chunk text 前 200 字)
+        // chunks 已按 score 降序,第一次遇到 ref 时设的就是最高分,后续跳过
         const refToPid = {}
-        for (const c of message.litqa.chunks) refToPid[c.ref] = c.paper_id
+        const refToPreview = {}
+        for (const c of message.litqa.chunks) {
+          if (!(c.ref in refToPid)) {
+            refToPid[c.ref] = c.paper_id
+            const txt = (c.text || '').trim().replace(/\s+/g, ' ')
+            if (txt) {
+              refToPreview[c.ref] = txt.slice(0, 200)
+                .replace(/"/g, '&quot;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;') + (txt.length > 200 ? '…' : '')
+            }
+          }
+        }
+        // 兜底删除 [#M] 段落级标记(LLM 不应输出,后端 stream 已清洗,前端再保一道)
+        html = html.replace(/\s*\[#\d+\]/g, '')
+        // [N] paper 级引用 → litqa-cite 链接(点击触发自动选 top chunk 高光)
         html = html.replace(/\[(\d+)\](?!\()/g, (m, n) => {
           const ref = parseInt(n)
           const pid = refToPid[ref] || ''
           if (!pid) return m
-          return `<a class="litqa-cite" data-ref="${ref}" data-paper-id="${pid}" href="#">[${ref}]</a>`
+          const preview = refToPreview[ref] || ''
+          const previewAttr = preview ? ` data-preview="${preview}"` : ''
+          return `<a class="litqa-cite" data-ref="${ref}" data-paper-id="${pid}"${previewAttr} href="#">[${ref}]</a>`
         })
       }
 
@@ -638,7 +706,7 @@ export default {
       let sessionToUse = this.sessionId
       if (this.sessionId === 'new') {
         try {
-          const response = await fetch(`${this.apiBaseUrl}/new_session/?user_id=user123`, { method: 'POST' })
+          const response = await apiFetch('/new_session/?user_id=user123', { method: 'POST' })
           const data = await response.json()
           this.localSessionId = data.session_id
           this.$emit('update-sessions')
@@ -650,8 +718,8 @@ export default {
       }
 
       try {
-        const response = await fetch(
-          `${this.apiBaseUrl}/chat/?session_id=${sessionToUse}&user_message=${encodeURIComponent(userText)}`,
+        const response = await apiFetch(
+          `/chat/?session_id=${sessionToUse}&user_message=${encodeURIComponent(userText)}`,
           { method: 'POST' }
         )
         const reader = response.body.getReader()
@@ -712,7 +780,7 @@ export default {
     async loadChatHistory () {
       if (!this.sessionId) return
       try {
-        const response = await fetch(`${this.apiBaseUrl}/messages/?session_id=${this.sessionId}`)
+        const response = await apiFetch(`/messages/?session_id=${this.sessionId}`)
         const data = await response.json()
         this.messages = data
           .filter(msg => msg.type !== 'user' || msg.text.trim() !== '')
@@ -1000,9 +1068,63 @@ export default {
   background: rgba(74, 144, 226, 0.08);
   margin: 0 1px;
   cursor: pointer;
+  position: relative;
 }
 :deep(a.litqa-cite:hover) {
   background: rgba(74, 144, 226, 0.2);
+}
+/* hover 显示原句前 200 字 tooltip — 类 NotebookLM 风格 */
+:deep(a.litqa-cite[data-preview]:hover::after) {
+  content: attr(data-preview);
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  background: #1a3556;
+  color: #fff;
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.5;
+  width: 360px;
+  max-width: 360px;
+  white-space: normal;
+  z-index: 1000;
+  box-shadow: 0 6px 18px rgba(0,0,0,0.25);
+  pointer-events: none;
+  text-align: left;
+}
+/* tooltip 小三角 */
+:deep(a.litqa-cite[data-preview]:hover::before) {
+  content: '';
+  position: absolute;
+  bottom: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  border: 6px solid transparent;
+  border-top-color: #1a3556;
+  z-index: 1000;
+  pointer-events: none;
+}
+
+/* deep_summary 里的 [#N] 引用 — 跟 [n] 区分:更柔和的紫色 chip */
+:deep(a.summary-cite) {
+  color: #7c4dff;
+  text-decoration: none;
+  font-weight: 600;
+  font-size: 0.82em;
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: rgba(124, 77, 255, 0.1);
+  border: 1px solid rgba(124, 77, 255, 0.2);
+  margin: 0 1px;
+  cursor: pointer;
+  transition: background 0.15s, transform 0.15s;
+}
+:deep(a.summary-cite:hover) {
+  background: rgba(124, 77, 255, 0.22);
+  transform: translateY(-1px);
 }
 
 /* ─── PDF 预览抽屉(右侧滑入) ─── */

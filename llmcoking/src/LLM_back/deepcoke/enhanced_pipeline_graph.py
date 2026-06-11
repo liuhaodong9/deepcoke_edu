@@ -33,14 +33,19 @@ from .agent_tools import (
     _vote_papers_from_chunks,
     _get_paper_meta,
     tool_read_paper_summary,
+    bge_rerank,
+    pack_fulltext_evidence,
+    BGE_RERANK_THRESHOLD,
+    RERANK_CANDIDATE_N,
+    FULLTEXT_BUDGET_TOKENS,
 )
 from .term_fix import fix_terms
 
 # 复用旧 pipeline_graph 里的辅助函数和节点
 from . import pipeline_graph as old_pipeline
 
-# ── 配置:直接读 top-K 篇 summary ───────────────────────────────────
-TOP_K_PAPERS = 5      # 投票后取前 K 篇,K 篇 summary 横排正好做 Elicit 表格
+# ── 配置:summary 当过滤器 + 全文当证据 ─────────────────────────────
+# (2026-06-09 新设计,见 plan: summary_filter + fulltext_evidence)
 VOTE_POOL_PER_Q = 30  # 每个 english_query 取这么多 chunk 进入投票池
 
 logger = logging.getLogger("deepcoke.enhanced_pipeline")
@@ -73,26 +78,30 @@ class EnhancedPipelineState(TypedDict):
 
 
 # ══════════════════════════════════════════════════════════════════
-# 新节点: fast_summary_retrieve
+# 新节点: summary_filter_fulltext_retrieve (2026-06-09)
+# 算法: 检索候选 → BGE rerank → 按 token budget 装全文(带 [#N] 标记) → generate
 # ══════════════════════════════════════════════════════════════════
 
 def node_fast_summary_retrieve(state: EnhancedPipelineState) -> dict:
-    """Node: 投票选 top-K 论文 → 直接读 K 篇 deep_summary,不调 LLM。
+    """Node: summary 当过滤器 + 全文当证据。
 
-    流程:
-      1. 用 english_queries 各自 retrieve VOTE_POOL_PER_Q 个 chunk
-      2. _vote_papers_from_chunks 选出 top-K paper_id
-      3. 每个 paper 直接 sqlite 取 deep_summary(没有就 fallback abstract)
-      4. K 篇 summary 包成 RetrievedChunk 列表给 generate
+    流程(对齐 plan):
+      A. 用 english_queries 各自 ChromaDB 检索 → 投票 → 8 篇候选 paper
+      B. 读 8 篇 summary(deep_summary > abstract fallback) → BGE rerank
+         过 0.7 阈值的进 prompt
+      C. 按 token budget 动态装全文(每 chunk 段开头加 [#chunk_index] 标记)
+         给 LLM 看 chunk 边界结构,但回答里不输出 [#N]
+      D. 输出 RetrievedChunk(每条 = paper 内一个 chunk 原文段) + LITQA_META
     """
-    steps = [{'text': f'正在用 {len(state.get("english_queries", []) or [1])} 个 query '
-                      f'选 top-{TOP_K_PAPERS} 篇论文…',
-              'done': False, 'pct': 35}]
-    out = [old_pipeline._progress_html(steps)]
-
     eng_queries = state.get("english_queries", []) or [state["question"]]
 
-    # 1. 多 query 投票 + 记录每个 query 的召回轨迹(给前端知识图谱用)
+    steps = [{
+        'text': f'A. 用 {len(eng_queries)} 个 query 检索 {RERANK_CANDIDATE_N} 篇候选论文…',
+        'done': False, 'pct': 30,
+    }]
+    out = [old_pipeline._progress_html(steps)]
+
+    # ── A. 检索 + 投票 ─────────────────────────────────────────
     all_chunks: list = []
     query_recalls: list[dict] = []
     try:
@@ -113,113 +122,163 @@ def node_fast_summary_retrieve(state: EnhancedPipelineState) -> dict:
                 ],
             })
     except Exception as e:
-        logger.warning(f"[fast_summary] retrieve failed: {e}, fallback to old node_retrieve")
+        logger.warning(f"[summary_filter] retrieve failed: {e}, fallback")
         return _fallback_to_retrieve(state, out, steps, reason=str(e))
 
-    paper_ids = _vote_papers_from_chunks(all_chunks, TOP_K_PAPERS)
-    if not paper_ids:
-        return _fallback_to_retrieve(state, out, steps, reason="no papers voted")
+    candidate_paper_ids = _vote_papers_from_chunks(all_chunks, RERANK_CANDIDATE_N)
+    if not candidate_paper_ids:
+        return _fallback_to_retrieve(state, out, steps, reason="no candidates voted")
 
-    # per-paper 最高分(给 papers_meta 排序展示用)
-    score_by_pid: dict[int, float] = {}
+    # per-paper 检索分(后续作为 fallback score)
+    retrieval_score_by_pid: dict[int, float] = {}
     for c in all_chunks:
-        if c.paper_id in paper_ids:
-            cur = score_by_pid.get(c.paper_id, 0.0)
+        if c.paper_id in candidate_paper_ids:
+            cur = retrieval_score_by_pid.get(c.paper_id, 0.0)
             if float(c.score) > cur:
-                score_by_pid[c.paper_id] = float(c.score)
+                retrieval_score_by_pid[c.paper_id] = float(c.score)
 
     steps[0]['done'] = True
-    steps[0]['text'] = f"定位到 top-{len(paper_ids)} 篇论文,开始读 summary…"
-    steps[0]['pct'] = 45
+    steps[0]['text'] = f"A. 选出 {len(candidate_paper_ids)} 篇候选,开始 BGE rerank…"
+    steps[0]['pct'] = 40
     out.append(old_pipeline._progress_html(steps))
 
-    # 2. 每篇 paper 读 summary(deep_summary 或 abstract fallback)
-    chunks: list[RetrievedChunk] = []
-    papers_meta: list[dict] = []
-    deep_hits = 0
-    abstract_fallbacks = 0
-    skipped = 0
+    # ── B. 读 summary + BGE rerank ─────────────────────────────
+    steps_b = [{
+        'text': f'B. 读 {len(candidate_paper_ids)} 篇 summary 并用 BGE-reranker 重排…',
+        'done': False, 'pct': 45,
+    }]
+    out.append(old_pipeline._progress_html(steps_b))
 
-    for pid in paper_ids:
+    rerank_docs: list[tuple[int, str]] = []
+    paper_meta_cache: dict[int, dict] = {}
+    summary_type_by_pid: dict[int, str] = {}
+
+    for pid in candidate_paper_ids:
         meta = _get_paper_meta(pid)
+        paper_meta_cache[pid] = meta
         summary_result = tool_read_paper_summary(pid)
-        summary_text = summary_result.get("summary", "") or ""
+        summary_text = (summary_result.get("summary") or "").strip()
         summary_type = summary_result.get("summary_type", "")
-        all_summary_chunks = summary_result.get("_all_chunks", []) or []
-
+        summary_type_by_pid[pid] = summary_type
         if not summary_text:
-            skipped += 1
-            logger.info(f"[fast_summary] paper_id={pid} no summary, skip")
-            continue
+            # 没 summary 也没 abstract: 用 title 兜底(不会通过阈值,但保证 BGE 有输入)
+            summary_text = meta.get("title", "") or f"Paper {pid}"
+        rerank_docs.append((pid, summary_text[:2000]))  # BGE max_length=512 tokens,~2000 chars
 
-        if summary_type == "deep":
-            deep_hits += 1
-            base_score = 0.92
-        else:
-            abstract_fallbacks += 1
-            base_score = 0.80
+    rerank_query = state.get("question", "") or (eng_queries[0] if eng_queries else "")
+    reranked = bge_rerank(rerank_query, rerank_docs)
+    # 过阈值
+    selected = [(pid, s) for pid, s in reranked if s >= BGE_RERANK_THRESHOLD]
 
-        # 用召回时的相关度作 final score(deep summary 加一个轻微 boost)
-        retrieval_score = score_by_pid.get(pid, 0.5)
-        final_score = max(base_score, retrieval_score)
+    if not selected:
+        logger.info(
+            f"[summary_filter] no paper passed threshold {BGE_RERANK_THRESHOLD}, "
+            f"top rerank scores: {[(pid, round(s, 3)) for pid, s in reranked[:3]]}"
+        )
+        # 退化:全无相关文献,降级到 generate 直答
+        steps_b[0]['done'] = True
+        steps_b[0]['text'] = f"B. 候选全部 < {BGE_RERANK_THRESHOLD} 阈值,无强相关文献"
+        steps_b[0]['pct'] = 55
+        out.append(old_pipeline._progress_html(steps_b))
+        return _empty_evidence(state, out, query_recalls, eng_queries)
 
-        title = meta.get("title", "") or summary_result.get("title", "")
+    steps_b[0]['done'] = True
+    steps_b[0]['text'] = (
+        f"B. BGE 重排选中 {len(selected)} 篇 (≥{BGE_RERANK_THRESHOLD}), "
+        f"top={selected[0][1]:.2f}"
+    )
+    steps_b[0]['pct'] = 55
+    out.append(old_pipeline._progress_html(steps_b))
+
+    # ── C. 按 token budget 装全文 ──────────────────────────────
+    steps_c = [{
+        'text': f'C. 按 token budget 装入全文(预算 {FULLTEXT_BUDGET_TOKENS // 1000}K)…',
+        'done': False, 'pct': 60,
+    }]
+    out.append(old_pipeline._progress_html(steps_c))
+
+    ranked_papers = []
+    for pid, rscore in selected:
+        meta = paper_meta_cache[pid]
         authors_raw = meta.get("authors", "") or ""
         authors_str = (
             ", ".join(str(a) for a in authors_raw)
             if isinstance(authors_raw, list) else str(authors_raw)
         )
-
-        chunks.append(RetrievedChunk(
-            text=summary_text,
-            paper_id=pid,
-            title=title,
-            section=f"Summary({summary_type or 'unknown'})",
-            category=meta.get("category", "") or "",
-            year=meta.get("year", 0) or 0,
-            authors=authors_str,
-            keywords=meta.get("keywords", "") or "",
-            score=final_score,
-            chunk_index=-3,  # -3 标识 "deep summary"(与旧 agent_tools 约定一致)
-        ))
-        papers_meta.append({
+        ranked_papers.append({
             "paper_id": pid,
-            "title": title,
+            "title": meta.get("title", "") or "",
             "authors": authors_str,
             "year": meta.get("year", 0) or 0,
-            "category": meta.get("category", "") or "",
             "journal": "",
-            "score": round(final_score, 3),
-            "cited": True,
-            "summary_chunks": all_summary_chunks,
-            "summary_text": summary_text,
-            "summary_type": summary_type,
+            "category": meta.get("category", "") or "",
+            "score": float(rscore),
+            "summary_type": summary_type_by_pid.get(pid, ""),
         })
 
-    if not chunks:
-        return _fallback_to_retrieve(state, out, steps, reason="no summaries available")
+    evidence_text, packed_papers, packed_chunks = pack_fulltext_evidence(
+        ranked_papers, budget_tokens=FULLTEXT_BUDGET_TOKENS
+    )
 
-    steps2 = [{
-        'text': (f"读完 {len(chunks)} 篇 summary "
-                 f"(深度 {deep_hits} + 摘要兜底 {abstract_fallbacks}"
-                 + (f" + 跳过 {skipped}" if skipped else "")
-                 + ")"),
-        'done': True, 'pct': 60,
-    }]
-    out.append(old_pipeline._progress_html(steps2))
+    if not packed_papers:
+        return _fallback_to_retrieve(state, out, steps_c, reason="no fulltext available")
 
-    # 3. LITQA_META payload(对齐 literature_qa / 旧 retrieve 字段)
+    steps_c[0]['done'] = True
+    used_tokens = sum(len(p) for p in [evidence_text]) * 0.45 // 1
+    steps_c[0]['text'] = (
+        f"C. 装入 {len(packed_papers)} 篇全文 "
+        f"(~{int(used_tokens) // 1000}K tokens,{len(packed_chunks)} 段)"
+    )
+    steps_c[0]['pct'] = 70
+    out.append(old_pipeline._progress_html(steps_c))
+
+    # ── D. 输出: 把 evidence_text 包成 1 个 "fulltext-evidence" RetrievedChunk
+    # generate 节点会用 chunks 列表里的 text 作 evidence,我们把 evidence_text 作为
+    # 单条 chunk 塞给它(generate 节点的 prompt 已重写,直接拿 chunks[0].text)
+    out_chunks: list[RetrievedChunk] = [RetrievedChunk(
+        text=evidence_text,
+        paper_id=0,
+        title="Fulltext Evidence Pack",
+        section="FulltextEvidence",
+        category="",
+        year=0,
+        authors="",
+        keywords="",
+        score=1.0,
+        chunk_index=-4,  # -4 标识 "fulltext evidence pack"
+    )]
+
+    # papers_meta: 仅 packed (装入的) papers,移除 summary_chunks 字段
+    papers_meta = [
+        {
+            "paper_id": p["paper_id"],
+            "title": p["title"],
+            "authors": p["authors"],
+            "year": p["year"],
+            "category": p["category"],
+            "journal": p.get("journal", ""),
+            "score": round(p["score"], 3),
+            "cited": True,
+            "ref_num": p["ref_num"],
+            "summary_type": p.get("summary_type", ""),
+        }
+        for p in packed_papers
+    ]
+
+    # LITQA_META.chunks: 装入的所有 chunks, 按 score 降序(供前端 [N] click 取 top-1)
     chunks_meta = [
         {
-            "ref": i + 1,
-            "chunk_id": f"{c.paper_id}_summary",
-            "paper_id": c.paper_id,
-            "section": c.section or "",
-            "score": round(float(c.score), 3),
-            "text": (c.text or "")[:1500],
+            "ref": c["ref_num"],
+            "chunk_id": f"{c['paper_id']}_{c['chunk_index']}",
+            "paper_id": c["paper_id"],
+            "chunk_index": c["chunk_index"],
+            "section": c["section"],
+            "score": c["score"],
+            "text": (c["text"] or "")[:1500],
         }
-        for i, c in enumerate(chunks)
+        for c in sorted(packed_chunks, key=lambda x: -x["score"])
     ]
+
     meta_payload = {
         "question": state["question"],
         "english_queries": eng_queries,
@@ -227,25 +286,49 @@ def node_fast_summary_retrieve(state: EnhancedPipelineState) -> dict:
         "papers": papers_meta,
         "chunks": chunks_meta,
         "query_recalls": query_recalls,
-        "mode": "fast_summary",
-        "deep_hits": deep_hits,
-        "abstract_fallbacks": abstract_fallbacks,
+        "mode": "summary_filter_fulltext",
+        "candidates_count": len(candidate_paper_ids),
+        "selected_count": len(selected),
+        "packed_count": len(packed_papers),
+        "rerank_threshold": BGE_RERANK_THRESHOLD,
     }
     out.append(f"<!--LITQA_META:{json.dumps(meta_payload, ensure_ascii=False)}-->\n")
 
     rationale = (
-        f"fast_summary: top-{len(paper_ids)} papers voted, "
-        f"{deep_hits} deep + {abstract_fallbacks} abstract"
+        f"summary_filter: {len(candidate_paper_ids)} candidates → "
+        f"rerank ≥{BGE_RERANK_THRESHOLD} = {len(selected)} → "
+        f"packed {len(packed_papers)} fulltexts"
     )
-    logger.info(
-        f"[fast_summary] papers={len(paper_ids)} deep={deep_hits} "
-        f"abs_fb={abstract_fallbacks} skipped={skipped}"
-    )
+    logger.info(f"[summary_filter] {rationale}")
 
     return {
-        "chunks": chunks,
+        "chunks": out_chunks,
         "agent_papers_meta": papers_meta,
         "agent_finalize_rationale": rationale,
+        "agent_iterations": 0,
+        "agent_fallback": False,
+        "output": out,
+    }
+
+
+def _empty_evidence(state, out, query_recalls, eng_queries):
+    """所有候选 < 阈值 → 让 generate 在无文献证据下回答(降级提示)。"""
+    meta_payload = {
+        "question": state["question"],
+        "english_queries": eng_queries,
+        "key_concepts": state.get("key_concepts", []),
+        "papers": [],
+        "chunks": [],
+        "query_recalls": query_recalls,
+        "mode": "summary_filter_fulltext",
+        "selected_count": 0,
+        "note": "no_paper_above_threshold",
+    }
+    out.append(f"<!--LITQA_META:{json.dumps(meta_payload, ensure_ascii=False)}-->\n")
+    return {
+        "chunks": [],
+        "agent_papers_meta": [],
+        "agent_finalize_rationale": "no paper above rerank threshold",
         "agent_iterations": 0,
         "agent_fallback": False,
         "output": out,

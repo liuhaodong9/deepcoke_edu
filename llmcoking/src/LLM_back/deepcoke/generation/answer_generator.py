@@ -10,23 +10,23 @@ def build_evidence_context(chunks: list[RetrievedChunk]) -> tuple[str, list[dict
     """
     Build a formatted evidence context string and reference list from retrieved chunks.
 
+    支持两种模式:
+    - 新 (FulltextEvidence pack): chunks 是单条,text 已是按 plan 拼好的多篇全文(带 [N]/[#M])
+      直接返回 chunks[0].text 作 evidence_text, references 由前端从 LITQA_META.papers 渲染
+    - 旧 (chunk-by-chunk): chunks 是多条原文段, 按 paper_id 去重拼成 [N] (section) text
+
     Returns:
         (evidence_text, references_list)
     """
     if not chunks:
         return "", []
 
-    # Deduplicate by paper_id, keeping highest score per paper
-    seen_papers = {}
-    for chunk in chunks:
-        pid = chunk.paper_id
-        if pid not in seen_papers or chunk.score > seen_papers[pid]["score"]:
-            seen_papers[pid] = {
-                "chunk": chunk,
-                "score": chunk.score,
-            }
+    # 新模式: enhanced_pipeline 的 summary_filter_fulltext 节点输出
+    first = chunks[0]
+    if (first.section == "FulltextEvidence" or first.chunk_index == -4) and first.text:
+        return first.text, []  # references 给空,LITQA_META.papers 已带完整信息
 
-    # Also include unique chunks from same paper if they cover different sections
+    # 旧模式: legacy chunk-RAG / literature_qa 路径
     unique_chunks = []
     paper_sections = set()
     for chunk in chunks:
@@ -35,7 +35,6 @@ def build_evidence_context(chunks: list[RetrievedChunk]) -> tuple[str, list[dict
             paper_sections.add(key)
             unique_chunks.append(chunk)
 
-    # Build evidence text with citation numbers
     evidence_parts = []
     references = []
     ref_map = {}  # paper_id -> reference number
@@ -82,11 +81,25 @@ def build_answer_prompt(
     evidence_text: str,
     kg_context: str = "",
     reasoning_trace: str = "",
+    structured_evidence: str = "",
 ) -> list[dict]:
     """Build the prompt messages for answer generation."""
     system_prompt = (
         "你是焦化大语言智能问答与分析系统DeepCoke，由苏州龙泰氢一能源科技有限公司研发。"
         "请基于提供的文献证据回答用户问题。\n\n"
+        "【证据结构】\n"
+        "  你看到的「相关文献证据」按 [N] 分篇，每篇内部按 [#M] 分段：\n"
+        "    ## Paper [1] <title> ...\n"
+        "    [#1] <chunk 1 内容>\n"
+        "    [#2] <chunk 2 内容>\n"
+        "    ## Paper [2] <title> ...\n"
+        "    [#1] <chunk 1 内容>\n"
+        "  [#M] 标记只是帮你理解段落边界，**严禁在回答里写 [#M]**。\n"
+        "  回答里只用 [N] 引用整篇 paper，例如 \"焦炭 CSR 与挥发分负相关 [1][2]\"。\n\n"
+        "【证据优先级】\n"
+        "  1. 优先使用「结构化字典」里的数值——这些是从文献中抽出的精确实验数据，可直接引用。\n"
+        "  2. 「结构化字典」未覆盖的，用「相关文献证据」全文补充（用 [1][2] 标注引用）。\n"
+        "  3. 两类证据都没有的，再用专业知识回答，并说明需要进一步查阅。\n\n"
         "中文术语规范(严格遵守,不要用错误版本):\n"
         "  ✓ 镜质组(不是\"镜质体\"),镜质组反射率(不是\"镜质体反射率\")\n"
         "  ✓ 惰质组(不是\"惰性成分\"、\"惰性组分\"、\"惰组分\"、\"惰质体\")\n"
@@ -104,7 +117,7 @@ def build_answer_prompt(
         "  ✓ 微孔(不是\"微孔率\"、\"微孔度\")\n\n"
         "要求：\n"
         "1. 用中文回答，专业术语可保留英文\n"
-        "2. 引用证据时使用 [1][2] 等标注\n"
+        "2. 引用证据时使用 [1][2] 等 paper 级标注，证据里的 [#M] 段标记**严禁出现在回答里**\n"
         "3. 如果证据不足以完全回答问题，明确说明哪些方面需要进一步研究\n"
         "4. 使用标准 Markdown 格式\n"
         "5. 数学公式使用 $$ 包裹\n"
@@ -113,6 +126,9 @@ def build_answer_prompt(
     )
 
     user_parts = [f"**用户问题：** {question}\n"]
+
+    if structured_evidence:
+        user_parts.append(f"**结构化字典（最高优先级）：**\n{structured_evidence}\n")
 
     if evidence_text:
         user_parts.append(f"**相关文献证据：**\n{evidence_text}\n")
@@ -123,7 +139,7 @@ def build_answer_prompt(
     if reasoning_trace:
         user_parts.append(f"**推理分析：**\n{reasoning_trace}\n")
 
-    if not evidence_text and not kg_context:
+    if not evidence_text and not kg_context and not structured_evidence:
         user_parts.append(
             "（未检索到直接相关的文献证据，请基于你的专业知识回答，并说明需要进一步查阅文献。）"
         )
@@ -134,37 +150,63 @@ def build_answer_prompt(
     ]
 
 
+import re as _re
+
+# stream 后处理: LLM 偶尔违反 prompt 仍输出 [#N], 用 tail buffer + regex 删除
+_SEGMENT_MARK_RE = _re.compile(r"\s*\[#\d+\]")
+_STREAM_BUF_TAIL = 10  # 保留末尾 10 字符防 [#N] 跨 piece 被切
+
+
+def _strip_segment_marks_stream(stream):
+    """Wrap an iterator yielding text pieces, strip [#N] segment marks on the fly."""
+    buf = ""
+    for piece in stream:
+        if not piece:
+            continue
+        buf += piece
+        if len(buf) > _STREAM_BUF_TAIL:
+            head = buf[:-_STREAM_BUF_TAIL]
+            tail = buf[-_STREAM_BUF_TAIL:]
+            cleaned = _SEGMENT_MARK_RE.sub("", head)
+            if cleaned:
+                yield cleaned
+            buf = tail
+    # flush remaining
+    if buf:
+        yield _SEGMENT_MARK_RE.sub("", buf)
+
+
 def generate_answer_stream(
     question: str,
     chunks: list[RetrievedChunk],
     kg_context: str = "",
     reasoning_trace: str = "",
+    structured_evidence: str = "",
 ):
     """
     Generate a streaming answer with citations.
 
     Yields text chunks that can be streamed to the frontend.
-    Also yields the reference section at the end.
+    LLM 偶尔违反 prompt 输出 [#N], stream 流式 tail buffer 兜底删除。
     """
     evidence_text, references = build_evidence_context(chunks)
-    messages = build_answer_prompt(question, evidence_text, kg_context, reasoning_trace)
+    messages = build_answer_prompt(question, evidence_text, kg_context, reasoning_trace, structured_evidence)
 
-    # Stream the main answer
-    stream = chat(messages, stream=True)
-    full_response_parts = []
+    def raw_pieces():
+        stream = chat(messages, stream=True)
+        for chunk in stream:
+            if not getattr(chunk, "choices", None):
+                continue
+            delta = chunk.choices[0].delta
+            piece = getattr(delta, "content", None)
+            if piece:
+                yield piece
 
-    for chunk in stream:
-        if not getattr(chunk, "choices", None):
-            continue
-        delta = chunk.choices[0].delta
-        piece = getattr(delta, "content", None)
-        if not piece:
-            continue
-        full_response_parts.append(piece)
-        yield piece
+    for cleaned in _strip_segment_marks_stream(raw_pieces()):
+        yield cleaned
 
-    # Append references
+    # Append references (legacy 模式才有 refs; 新 FulltextEvidence 模式 refs=[],
+    # 前端从 LITQA_META.papers 渲染参考文献)
     if references:
         ref_text = format_references(references)
         yield ref_text
-        full_response_parts.append(ref_text)

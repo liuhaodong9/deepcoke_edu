@@ -587,3 +587,275 @@ def reconstruct_chunks_for_generation(
                     papers_meta[pid]["cited"] = True
 
     return chunks, list(papers_meta.values())
+
+
+# ══════════════════════════════════════════════════════════════════
+# 2026-06-09 新增: summary_filter + fulltext_evidence 工作流
+# 设计参考 plan: summary 只做 reranker, 全文按 token budget 装给 LLM
+# ══════════════════════════════════════════════════════════════════
+
+# vLLM context 上限,部署时按实际启动 --max-model-len 调
+VLLM_MAX_TOKENS = 32768
+# 留给 LLM 输出 + 安全余量
+RESERVED_OUTPUT_TOKENS = 2048
+# 留给 system prompt + question + structured_evidence
+RESERVED_OVERHEAD_TOKENS = 3000
+# 全文证据可用预算
+FULLTEXT_BUDGET_TOKENS = VLLM_MAX_TOKENS - RESERVED_OUTPUT_TOKENS - RESERVED_OVERHEAD_TOKENS
+
+# BGE reranker 阈值(高于该值的 paper 才进 prompt)
+BGE_RERANK_THRESHOLD = 0.7
+# 候选 paper 数(进 BGE rerank 的上限)
+RERANK_CANDIDATE_N = 8
+
+
+def estimate_tokens(text: str) -> int:
+    """粗略估 token 数: 中英混排约 0.4 token/char, 加 10% 缓冲。
+    准确算可改 tiktoken,但加载成本高,在线流程不建议。"""
+    if not text:
+        return 0
+    return int(len(text) * 0.45)
+
+
+# BGE reranker 全局单例(懒加载,首次调用时载入)
+_BGE_RERANKER = None
+_BGE_RERANKER_KIND = None  # "cross_encoder" / "flag_reranker" / "disabled"
+
+
+def _load_bge_reranker():
+    """懒加载 BGE reranker。优先 sentence-transformers CrossEncoder,
+    退到 FlagEmbedding FlagReranker,都没有就 disabled(降级用检索分排序)。"""
+    global _BGE_RERANKER, _BGE_RERANKER_KIND
+    if _BGE_RERANKER_KIND is not None:
+        return _BGE_RERANKER
+
+    from . import config as _cfg
+    model_path = str(_cfg.BASE_DIR / "data" / "bge-reranker-base")
+
+    # 尝试 sentence-transformers
+    try:
+        from sentence_transformers import CrossEncoder
+        _BGE_RERANKER = CrossEncoder(model_path, max_length=512)
+        _BGE_RERANKER_KIND = "cross_encoder"
+        logger.info(f"[bge_rerank] loaded via sentence-transformers from {model_path}")
+        return _BGE_RERANKER
+    except Exception as e:
+        logger.warning(f"[bge_rerank] sentence-transformers load failed: {e}")
+
+    # 尝试 FlagEmbedding
+    try:
+        from FlagEmbedding import FlagReranker
+        _BGE_RERANKER = FlagReranker(model_path, use_fp16=True)
+        _BGE_RERANKER_KIND = "flag_reranker"
+        logger.info(f"[bge_rerank] loaded via FlagEmbedding from {model_path}")
+        return _BGE_RERANKER
+    except Exception as e:
+        logger.warning(f"[bge_rerank] FlagEmbedding load failed: {e}")
+
+    _BGE_RERANKER_KIND = "disabled"
+    logger.warning("[bge_rerank] no reranker available, will fallback to retrieval scores")
+    return None
+
+
+def bge_rerank(query: str, candidates: list[tuple[int, str]]) -> list[tuple[int, float]]:
+    """对 (paper_id, doc) 列表跑 BGE reranker,返回 [(paper_id, score), ...] 按 score 降序。
+
+    Args:
+        query: 用户问题(中文或英文都行)
+        candidates: [(paper_id, doc_text), ...] 比如 (paper_id, summary)
+
+    Returns:
+        按 score 降序的 (paper_id, score) 列表。降级时用 1.0 全过。
+    """
+    if not candidates:
+        return []
+
+    model = _load_bge_reranker()
+    if model is None or _BGE_RERANKER_KIND == "disabled":
+        # 降级: 所有 candidate 都给 1.0,等于 BGE 不工作时按检索分顺序保留全部
+        logger.info(f"[bge_rerank] disabled mode, passing {len(candidates)} candidates through")
+        return [(pid, 1.0) for pid, _ in candidates]
+
+    try:
+        pairs = [(query, doc) for _, doc in candidates]
+        if _BGE_RERANKER_KIND == "cross_encoder":
+            raw_scores = model.predict(pairs)
+        else:  # flag_reranker
+            raw_scores = model.compute_score(pairs, normalize=True)
+            # FlagReranker 单条返回 float,多条返回 list
+            if isinstance(raw_scores, float):
+                raw_scores = [raw_scores]
+
+        results = [
+            (candidates[i][0], float(s))
+            for i, s in enumerate(raw_scores)
+        ]
+        results.sort(key=lambda x: -x[1])
+        logger.info(
+            f"[bge_rerank] {len(results)} scored, "
+            f"top={results[0][1]:.3f}, bottom={results[-1][1]:.3f}"
+        )
+        return results
+    except Exception as e:
+        logger.warning(f"[bge_rerank] inference failed: {e}, fallback all-pass")
+        return [(pid, 1.0) for pid, _ in candidates]
+
+
+def reconstruct_fulltext_with_index(paper_id: int, max_chars: int = MAX_FULLTEXT_CHARS) -> dict:
+    """从 ChromaDB 拼回 paper 全文,每个 chunk 段开头加 [#chunk_index] 标记。
+
+    给 LLM 提供 chunk 边界结构,LLM 看到 [#N] 但 prompt 要求不要输出 [#N]。
+
+    Returns:
+      {
+        paper_id, title,
+        fulltext: 带 [#N] 标记的全文字符串,
+        chunks: [{chunk_index, section, text, char_offset}] 给前端高光用,
+        char_count, truncated
+      }
+    """
+    coll = get_collection()
+    raw = coll.get(where={"paper_id": int(paper_id)}, limit=200)
+    if not raw or not raw.get("ids"):
+        return {"paper_id": paper_id, "error": "not found", "fulltext": "", "chunks": []}
+
+    title = ""
+    section_groups: dict[str, list[tuple[int, str]]] = defaultdict(list)
+    section_order: list[str] = []
+
+    for i, meta in enumerate(raw["metadatas"]):
+        if not title and meta.get("title"):
+            title = meta.get("title", "")
+        section = (meta.get("section") or "Body").strip()
+        if section.lower() in SKIP_SECTIONS_FOR_FULLTEXT:
+            continue
+        if section not in section_order:
+            section_order.append(section)
+        section_groups[section].append((
+            meta.get("chunk_index", 0),
+            raw["documents"][i],
+        ))
+
+    parts = []
+    chunks_meta = []
+    total_chars = 0
+    truncated = False
+
+    for section in section_order:
+        parts.append(f"\n## {section}\n")
+        total_chars += len(parts[-1])
+        for chunk_index, chunk_text in sorted(section_groups[section]):
+            marker = f"[#{chunk_index}] "
+            piece = marker + chunk_text + "\n\n"
+            if total_chars + len(piece) > max_chars:
+                truncated = True
+                break
+            parts.append(piece)
+            chunks_meta.append({
+                "chunk_index": chunk_index,
+                "section": section,
+                "text": chunk_text,
+                "char_offset": total_chars + len(marker),
+            })
+            total_chars += len(piece)
+        if truncated:
+            break
+
+    fulltext = f"# {title}\n" + "".join(parts)
+
+    logger.info(
+        f"[fulltext_with_index] paper_id={paper_id} sections={len(section_order)} "
+        f"chunks={len(chunks_meta)} chars={total_chars} truncated={truncated}"
+    )
+    return {
+        "paper_id": paper_id,
+        "title": title,
+        "fulltext": fulltext,
+        "chunks": chunks_meta,
+        "char_count": total_chars,
+        "truncated": truncated,
+    }
+
+
+def pack_fulltext_evidence(
+    ranked_papers: list[dict],
+    budget_tokens: int = FULLTEXT_BUDGET_TOKENS,
+) -> tuple[str, list[dict], list[dict]]:
+    """按 token budget 把 top-K 篇 paper 全文拼成 evidence text 给 LLM。
+
+    Args:
+        ranked_papers: [{paper_id, title, year, journal, score, ...}, ...] 按 score 降序
+        budget_tokens: token 预算上限
+
+    Returns:
+      (evidence_text, packed_papers, packed_chunks)
+        evidence_text: 给 LLM prompt 的字符串,格式见 plan
+        packed_papers: 实际装入的 paper list, 加了 ref_num 字段(LLM 用的 [N])
+        packed_chunks: 全部 chunks 的 LITQA_META 用数据,
+                       字段 {paper_id, ref_num, chunk_index, section, text, score}
+                       text 按 paper 综合分排过序(top-1 用于高光)
+    """
+    packed_papers = []
+    packed_chunks = []
+    parts = []
+    used_tokens = 0
+
+    for paper in ranked_papers:
+        pid = paper["paper_id"]
+        ft = reconstruct_fulltext_with_index(pid)
+        if ft.get("error"):
+            logger.warning(f"[pack_fulltext] paper {pid} unavailable, skip")
+            continue
+
+        # 该 paper 完整加入需要多少 token
+        ref_num = len(packed_papers) + 1
+        header = f"\n## Paper [{ref_num}] {ft['title']} ({paper.get('year', '?')}, {paper.get('journal', '')})\n"
+        body = ft["fulltext"][ft["fulltext"].find("\n") + 1:]  # 去掉 ft 自己的 "# title" 行
+        full_block = header + body
+        block_tokens = estimate_tokens(full_block)
+
+        if used_tokens + block_tokens > budget_tokens:
+            if not packed_papers:
+                # 一篇都没装且第一篇就超 budget: 截断装一半
+                logger.warning(
+                    f"[pack_fulltext] paper {pid} alone exceeds budget "
+                    f"({block_tokens} > {budget_tokens}), truncating"
+                )
+                ratio = budget_tokens / block_tokens
+                truncated_len = int(len(full_block) * ratio * 0.95)
+                full_block = full_block[:truncated_len] + "\n... [truncated]\n"
+            else:
+                logger.info(
+                    f"[pack_fulltext] paper {pid} would exceed budget "
+                    f"({used_tokens + block_tokens} > {budget_tokens}), stopping"
+                )
+                break
+
+        parts.append(full_block)
+        used_tokens += estimate_tokens(full_block)
+
+        packed_papers.append({
+            **paper,
+            "ref_num": ref_num,
+            "cited": True,
+        })
+
+        # 该 paper 的 chunks 按相关度排(沿用 paper score 作 chunk score 基础值,
+        # 后续可加 BM25 / chunk-level rerank 精排)
+        paper_score = paper.get("score", 0.5)
+        for c in ft["chunks"]:
+            packed_chunks.append({
+                "paper_id": pid,
+                "ref_num": ref_num,
+                "chunk_index": c["chunk_index"],
+                "section": c["section"],
+                "text": c["text"],
+                "score": round(paper_score, 3),
+            })
+
+    evidence_text = "".join(parts)
+    logger.info(
+        f"[pack_fulltext] packed {len(packed_papers)} papers, "
+        f"{len(packed_chunks)} chunks, {used_tokens} tokens (budget {budget_tokens})"
+    )
+    return evidence_text, packed_papers, packed_chunks
