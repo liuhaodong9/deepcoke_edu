@@ -64,8 +64,9 @@ _SECTION_WORDS = (
 _SECTION_RE = re.compile(rf"^(?:\d+\.?\s+)?(?:{_SECTION_WORDS})\b", re.IGNORECASE)
 # 编号标题:"3 Results" / "3.2 CSR prediction" / "3.2.1 ..."
 _NUMBERED_RE = re.compile(r"^(\d+(?:\.\d+)*)\.?\s+\S")
-_FIG_CAPTION_RE = re.compile(r"^(Fig(?:ure)?\.?\s*(\d+[A-Za-z]?))", re.IGNORECASE)
-_TABLE_CAPTION_RE = re.compile(r"^(Tab(?:le)?\.?\s*(\d+[A-Za-z]?))", re.IGNORECASE)
+# 图注/表注:图号后必须跟分隔符(. : - —)或紧跟说明,挡掉行内引用 "Fig. 5 shows..."
+_FIG_CAPTION_RE = re.compile(r"^(Fig(?:ure)?\.?\s*(\d+[A-Za-z]?))\s*[.:)\-—]", re.IGNORECASE)
+_TABLE_CAPTION_RE = re.compile(r"^(Tab(?:le)?\.?\s*(\d+[A-Za-z]?))\s*[.:)\-—]", re.IGNORECASE)
 
 
 def parse_pdf(pdf_path: str | Path) -> ParsedPaper | None:
