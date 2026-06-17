@@ -21,7 +21,7 @@ from deepcoke import config
 from deepcoke.ingestion.pdf_parser import parse_pdf
 from deepcoke.ingestion.metadata_extractor import extract_metadata, infer_category
 from deepcoke.ingestion.tagging import generate_tags
-from deepcoke.vectorstore.chunker import chunk_sections
+from deepcoke.vectorstore.chunker import chunk_blocks, chunk_sections
 from deepcoke.vectorstore.chromadb_store import get_collection, upsert_chunks
 
 # SQLite database path (lives alongside ChromaDB data)
@@ -194,8 +194,14 @@ def run():
         print(f"  ├─ 标签: {tags}")
 
         # Step 5: Chunk the paper
-        chunks = chunk_sections(parsed.sections)
-        print(f"  ├─ 分块: {len(chunks)} 个片段")
+        # 优先用结构化 blocks 分块(带页码/章节/表格 metadata);无 blocks 时退回旧 sections 切法
+        if getattr(parsed, "blocks", None):
+            chunks = chunk_blocks(parsed.blocks)
+        else:
+            chunks = chunk_sections(parsed.sections)
+        n_table = sum(1 for c in chunks if getattr(c, "block_type", "") == "table")
+        n_fig = sum(1 for c in chunks if getattr(c, "block_type", "") == "figure")
+        print(f"  ├─ 分块: {len(chunks)} 个片段 (表 {n_table} / 图 {n_fig})")
 
         # Step 6: Insert paper record into SQLite
         paper_id = insert_paper_record(conn, meta, pdf_path, category, tags, len(chunks))

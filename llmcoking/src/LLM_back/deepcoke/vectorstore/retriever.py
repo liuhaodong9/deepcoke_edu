@@ -19,6 +19,14 @@ class RetrievedChunk:
     keywords: str
     score: float  # cosine similarity (higher = more similar)
     chunk_index: int
+    # 结构化定位字段(新 ingestion 才有,旧库为默认值)
+    page_start: int = 0
+    page_end: int = 0
+    section_path: str = ""
+    block_type: str = "paragraph"
+    table_no: str = ""
+    figure_no: str = ""
+    bbox: str = ""
 
 
 def retrieve(
@@ -70,6 +78,13 @@ def retrieve(
             keywords=meta.get("keywords", ""),
             score=similarity,
             chunk_index=meta.get("chunk_index", 0),
+            page_start=meta.get("page_start", 0),
+            page_end=meta.get("page_end", 0),
+            section_path=meta.get("section_path", ""),
+            block_type=meta.get("block_type", "paragraph"),
+            table_no=meta.get("table_no", ""),
+            figure_no=meta.get("figure_no", ""),
+            bbox=meta.get("bbox", ""),
         ))
 
     return chunks

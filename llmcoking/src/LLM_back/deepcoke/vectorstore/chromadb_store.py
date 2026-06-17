@@ -87,11 +87,21 @@ def upsert_chunks(
         chunk_id = f"{paper_id}_{chunk.chunk_index}"
         ids.append(chunk_id)
         documents.append(chunk.text)
+        # ChromaDB metadata 只接受 str/int/float/bool;bbox 序列化成字符串。
+        bbox = getattr(chunk, "bbox", (0.0, 0.0, 0.0, 0.0)) or (0.0, 0.0, 0.0, 0.0)
         meta = {
             **metadata_base,
             "paper_id": paper_id,
             "section": chunk.section,
             "chunk_index": chunk.chunk_index,
+            # 新增结构化定位字段(getattr 兼容旧 Chunk)
+            "page_start": int(getattr(chunk, "page_start", 0) or 0),
+            "page_end": int(getattr(chunk, "page_end", 0) or 0),
+            "section_path": getattr(chunk, "section_path", "") or "",
+            "block_type": getattr(chunk, "block_type", "paragraph") or "paragraph",
+            "table_no": getattr(chunk, "table_no", "") or "",
+            "figure_no": getattr(chunk, "figure_no", "") or "",
+            "bbox": ",".join(str(round(float(v), 1)) for v in bbox),
         }
         metadatas.append(meta)
 

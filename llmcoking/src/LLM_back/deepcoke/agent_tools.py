@@ -460,12 +460,218 @@ def tool_read_paper_summary(paper_id: int) -> dict:
     return {"paper_id": paper_id, "title": title or "", "error": "no summary available", "summary": ""}
 
 
+# ══════════════════════════════════════════════════════════════════
+# Step 3 (2026-06-17): 结构化 PDF 工具 — 基于新 ingestion 的 chunk metadata
+# (page_start/page_end/section_path/block_type/table_no/figure_no/bbox)
+# 全部 Python 端过滤:只用 where={"paper_id": pid} 等值查询,避开生产 chromadb
+# 版本不认 $in/$lte 等操作符的坑。旧库缺这些字段时优雅降级(返回默认值)。
+# ══════════════════════════════════════════════════════════════════
+def _parse_bbox(s: str) -> list:
+    """'x0,y0,x1,y1' 字符串 → [float,...];失败返回 []。"""
+    if not s:
+        return []
+    try:
+        return [float(v) for v in s.split(",")]
+    except Exception:
+        return []
+
+
+def _get_paper_chunks(paper_id: int) -> list:
+    """取一篇论文全部 chunk,按 chunk_index 排序,返回 dict 列表(含 metadata + 文本)。"""
+    coll = get_collection()
+    raw = coll.get(where={"paper_id": int(paper_id)}, limit=500)
+    if not raw or not raw.get("ids"):
+        return []
+    out = []
+    for i, _id in enumerate(raw["ids"]):
+        meta = raw["metadatas"][i] or {}
+        out.append({
+            "chunk_index": meta.get("chunk_index", 0),
+            "page_start": meta.get("page_start", 0),
+            "page_end": meta.get("page_end", 0),
+            "section": meta.get("section", ""),
+            "section_path": meta.get("section_path", ""),
+            "block_type": meta.get("block_type", "paragraph"),
+            "table_no": meta.get("table_no", ""),
+            "figure_no": meta.get("figure_no", ""),
+            "bbox": meta.get("bbox", ""),
+            "title": meta.get("title", ""),
+            "text": raw["documents"][i],
+        })
+    out.sort(key=lambda c: c["chunk_index"])
+    return out
+
+
+def tool_search_pdf(query: str, paper_id: int = None, top_k: int = 8) -> dict:
+    """检索相关片段(可限定单篇),返回带页码/章节/bbox 的片段供溯源。"""
+    where = {"paper_id": int(paper_id)} if paper_id else None
+    chunks = retrieve(query, top_k=int(top_k), where=where)
+    hits = [{
+        "paper_id": c.paper_id,
+        "chunk_index": c.chunk_index,
+        "page": c.page_start,
+        "page_end": c.page_end,
+        "section_path": c.section_path or c.section,
+        "block_type": c.block_type,
+        "table_no": c.table_no,
+        "score": round(float(c.score), 3),
+        "bbox": _parse_bbox(c.bbox),
+        "snippet": c.text[:400],
+    } for c in chunks]
+    logger.info(f"[tool:search_pdf] q={query[:40]!r} paper={paper_id} → {len(hits)} hits")
+    return {"query": query, "paper_id": paper_id, "hits": hits}
+
+
+def tool_read_page(paper_id: int, page: int) -> dict:
+    """读指定页的全部 block(按阅读顺序)。page 为 0-based 真页码。"""
+    page = int(page)
+    chunks = _get_paper_chunks(paper_id)
+    if not chunks:
+        return {"paper_id": paper_id, "page": page, "error": "paper not found", "blocks": []}
+    on_page = [c for c in chunks if c["page_start"] <= page <= c["page_end"]]
+    blocks = [{
+        "chunk_index": c["chunk_index"],
+        "block_type": c["block_type"],
+        "section_path": c["section_path"] or c["section"],
+        "table_no": c["table_no"],
+        "figure_no": c["figure_no"],
+        "text": c["text"],
+    } for c in on_page]
+    title = chunks[0]["title"]
+    logger.info(f"[tool:read_page] paper={paper_id} page={page} → {len(blocks)} blocks")
+    return {"paper_id": paper_id, "title": title, "page": page,
+            "block_count": len(blocks), "blocks": blocks}
+
+
+def tool_extract_table(paper_id: int, table_no: str = None, query: str = None) -> dict:
+    """抽取论文的表格(结构化 markdown)。给 table_no 精确取,给 query 关键词排序,都不给返回全部表。"""
+    chunks = _get_paper_chunks(paper_id)
+    tables = [c for c in chunks if c["block_type"] == "table"]
+    if not tables:
+        return {"paper_id": paper_id, "tables": [],
+                "note": "无结构化表格(可能是无线表/扫描件,或该库尚未用新 ingestion 重抽)"}
+
+    if table_no:
+        want = table_no.lower().replace(" ", "")
+        tables = [t for t in tables
+                  if want in (t["table_no"] or "").lower().replace(" ", "")] or tables
+    elif query:
+        ql = query.lower()
+        tables.sort(key=lambda t: sum(w in t["text"].lower() for w in ql.split()), reverse=True)
+
+    result = [{
+        "table_no": t["table_no"],
+        "page": t["page_start"],
+        "section_path": t["section_path"],
+        "bbox": _parse_bbox(t["bbox"]),
+        "chunk_index": t["chunk_index"],
+        "markdown": t["text"],
+    } for t in tables[:5]]
+    logger.info(f"[tool:extract_table] paper={paper_id} table_no={table_no} → {len(result)} tables")
+    return {"paper_id": paper_id, "table_count": len(result), "tables": result}
+
+
+def tool_quote_source(paper_id: int, chunk_index: int) -> dict:
+    """返回精确原文 + 页码 + bbox,供引用溯源/PDF 高亮。"""
+    chunks = _get_paper_chunks(paper_id)
+    match = [c for c in chunks if c["chunk_index"] == int(chunk_index)]
+    if not match:
+        return {"paper_id": paper_id, "chunk_index": chunk_index, "error": "chunk not found"}
+    c = match[0]
+    return {
+        "paper_id": paper_id,
+        "title": c["title"],
+        "chunk_index": c["chunk_index"],
+        "page": c["page_start"],
+        "page_end": c["page_end"],
+        "section_path": c["section_path"] or c["section"],
+        "block_type": c["block_type"],
+        "table_no": c["table_no"],
+        "figure_no": c["figure_no"],
+        "bbox": _parse_bbox(c["bbox"]),
+        "quote": c["text"],
+    }
+
+
+def tool_analyze_chart(paper_id: int, figure_no: str = None) -> dict:
+    """图表理解 — Phase 2 桩。当前只返回图注(VLM 图像摘要待接 Qwen2.5-VL)。"""
+    chunks = _get_paper_chunks(paper_id)
+    figs = [c for c in chunks if c["block_type"] == "figure"]
+    if figure_no:
+        want = figure_no.lower().replace(" ", "")
+        figs = [f for f in figs
+                if want in (f["figure_no"] or "").lower().replace(" ", "")] or figs
+    result = [{
+        "figure_no": f["figure_no"],
+        "page": f["page_start"],
+        "section_path": f["section_path"],
+        "caption": f["text"],
+        "summary": None,  # Phase 2: VLM 生成
+    } for f in figs[:8]]
+    return {"paper_id": paper_id, "figure_count": len(result), "figures": result,
+            "note": "图像摘要(VLM)为 Phase 2 功能,当前仅返回图注"}
+
+
 TOOL_DISPATCH = {
     "read_paper_summary": tool_read_paper_summary,
     "find_relevant_papers": tool_find_relevant_papers,
     "read_paper_fulltext": tool_read_paper_fulltext,
     "read_paper_section": tool_read_paper_section,
+    # Step 3 结构化 PDF 工具
+    "search_pdf": tool_search_pdf,
+    "read_page": tool_read_page,
+    "extract_table": tool_extract_table,
+    "quote_source": tool_quote_source,
+    "analyze_chart": tool_analyze_chart,
 }
+
+
+# Step 3 工具的 LLM 调用 schema(供 agent 按需调用)
+TOOL_DEFINITIONS += [
+    {"type": "function", "function": {
+        "name": "search_pdf",
+        "description": (
+            "检索相关片段(语义检索),返回每段的 paper_id/chunk_index/页码/章节路径/类型/bbox/原文摘要。"
+            "可传 paper_id 限定单篇内检索。用于:定位某说法在哪几段、哪一页。"),
+        "parameters": {"type": "object", "properties": {
+            "query": {"type": "string", "description": "检索 query(英文最佳)"},
+            "paper_id": {"type": "integer", "description": "可选,限定在该论文内检索"},
+            "top_k": {"type": "integer", "default": 8, "description": "返回片段数"},
+        }, "required": ["query"]}}},
+    {"type": "function", "function": {
+        "name": "read_page",
+        "description": "读论文指定页(0-based 真页码)的全部 block,按阅读顺序返回。用于:核对某页上下文。",
+        "parameters": {"type": "object", "properties": {
+            "paper_id": {"type": "integer", "description": "论文 id"},
+            "page": {"type": "integer", "description": "0-based 页码"},
+        }, "required": ["paper_id", "page"]}}},
+    {"type": "function", "function": {
+        "name": "extract_table",
+        "description": (
+            "抽取论文中的表格(结构化 markdown)。传 table_no 精确取某表,传 query 按关键词排序,"
+            "都不传返回全部表。用于:取定量数据表核对数值。"),
+        "parameters": {"type": "object", "properties": {
+            "paper_id": {"type": "integer", "description": "论文 id"},
+            "table_no": {"type": "string", "description": "可选,如 'Table 3'"},
+            "query": {"type": "string", "description": "可选,按关键词排序表格"},
+        }, "required": ["paper_id"]}}},
+    {"type": "function", "function": {
+        "name": "quote_source",
+        "description": (
+            "返回某个 chunk 的精确原文 + 页码 + bbox,供引用溯源 / PDF 高亮。"
+            "用于:确认要引用的原句出处。chunk_index 来自 search_pdf 的返回。"),
+        "parameters": {"type": "object", "properties": {
+            "paper_id": {"type": "integer", "description": "论文 id"},
+            "chunk_index": {"type": "integer", "description": "片段索引(search_pdf 返回)"},
+        }, "required": ["paper_id", "chunk_index"]}}},
+    {"type": "function", "function": {
+        "name": "analyze_chart",
+        "description": "理解论文中的图表(Phase 2:当前仅返回图注,VLM 图像摘要待接入)。",
+        "parameters": {"type": "object", "properties": {
+            "paper_id": {"type": "integer", "description": "论文 id"},
+            "figure_no": {"type": "string", "description": "可选,如 'Figure 2'"},
+        }, "required": ["paper_id"]}}},
+]
 
 
 def execute_tool(name: str, arguments: dict) -> str:

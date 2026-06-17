@@ -1,0 +1,66 @@
+[
+  {
+    "id": "q001",
+    "type": "retrieval",
+    "question": "焦炭热态强度 CSR 是怎么定义/测量的?",
+    "query": "coke strength after reaction CSR measurement",
+    "expected_substring": "strength after reaction",
+    "note": "种子:CSR 全称应能被检索到"
+  },
+  {
+    "id": "q002",
+    "type": "retrieval",
+    "question": "煤的挥发分对结焦性的影响?",
+    "query": "volatile matter effect on coking coke quality",
+    "expected_substring": "volatile matter",
+    "note": "种子"
+  },
+  {
+    "id": "q003",
+    "type": "retrieval",
+    "question": "煤在加热时的塑性/流动度行为?",
+    "query": "coal fluidity during heating plastic stage",
+    "expected_substring": "fluidity",
+    "note": "种子"
+  },
+  {
+    "id": "q004",
+    "type": "retrieval",
+    "question": "配煤(coal blend)如何影响焦炭质量?",
+    "query": "coal blend effect on coke quality",
+    "expected_substring": "blend",
+    "note": "种子"
+  },
+  {
+    "id": "q005",
+    "type": "retrieval",
+    "question": "焦炉煤气有哪些副产物?",
+    "query": "coke oven gas byproducts tar",
+    "expected_substring": "coke oven gas",
+    "note": "种子"
+  },
+  {
+    "id": "q006",
+    "type": "retrieval",
+    "question": "煤的膨胀/收缩对焦炉壁压力的影响?",
+    "query": "coal swelling pressure coke oven wall",
+    "expected_substring": "pressure",
+    "note": "种子"
+  },
+  {
+    "id": "t001",
+    "type": "table",
+    "note": "示例:表格解析 — 需填 table_paper_id + 标准 cells(库重抽后填真实 id)",
+    "table_paper_id": null,
+    "expected_table_no": "Table 1",
+    "expected_cells": [["Coal", "Ash", "VM"], ["A", "8.5", "24.0"]]
+  },
+  {
+    "id": "c001",
+    "type": "chart",
+    "note": "示例:图表理解 — 需填 chart_paper_id(库重抽后填真实 id)",
+    "chart_paper_id": null,
+    "figure_no": "Figure 1",
+    "expected_summary_keywords": ["fluidity", "temperature"]
+  }
+]
