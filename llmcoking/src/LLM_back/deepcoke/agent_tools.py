@@ -494,6 +494,7 @@ def _get_paper_chunks(paper_id: int) -> list:
             "block_type": meta.get("block_type", "paragraph"),
             "table_no": meta.get("table_no", ""),
             "figure_no": meta.get("figure_no", ""),
+            "figure_summary": meta.get("figure_summary", ""),
             "bbox": meta.get("bbox", ""),
             "title": meta.get("title", ""),
             "text": raw["documents"][i],
@@ -594,22 +595,30 @@ def tool_quote_source(paper_id: int, chunk_index: int) -> dict:
 
 
 def tool_analyze_chart(paper_id: int, figure_no: str = None) -> dict:
-    """图表理解 — Phase 2 桩。当前只返回图注(VLM 图像摘要待接 Qwen2.5-VL)。"""
+    """图表理解 — 返回图注 + VLM 图像描述(由 build_figure_summaries 离线生成,存在 chunk metadata)。"""
     chunks = _get_paper_chunks(paper_id)
     figs = [c for c in chunks if c["block_type"] == "figure"]
     if figure_no:
         want = figure_no.lower().replace(" ", "")
         figs = [f for f in figs
                 if want in (f["figure_no"] or "").lower().replace(" ", "")] or figs
-    result = [{
-        "figure_no": f["figure_no"],
-        "page": f["page_start"],
-        "section_path": f["section_path"],
-        "caption": f["text"],
-        "summary": None,  # Phase 2: VLM 生成
-    } for f in figs[:8]]
-    return {"paper_id": paper_id, "figure_count": len(result), "figures": result,
-            "note": "图像摘要(VLM)为 Phase 2 功能,当前仅返回图注"}
+    result = []
+    for f in figs[:8]:
+        summ = f.get("figure_summary", "")
+        # chunk document 可能已拼了 "[图像描述] ...",caption 取前半段
+        cap = f["text"].split("[图像描述]")[0].strip()
+        result.append({
+            "figure_no": f["figure_no"],
+            "page": f["page_start"],
+            "section_path": f["section_path"],
+            "caption": cap,
+            "summary": summ or None,
+        })
+    n_with_summary = sum(1 for r in result if r["summary"])
+    return {"paper_id": paper_id, "figure_count": len(result),
+            "with_summary": n_with_summary, "figures": result,
+            "note": ("" if n_with_summary else
+                     "尚无 VLM 图像描述,请先跑 build_figure_summaries(需视觉模型)")}
 
 
 TOOL_DISPATCH = {

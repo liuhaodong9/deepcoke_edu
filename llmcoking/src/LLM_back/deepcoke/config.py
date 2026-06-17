@@ -15,6 +15,13 @@ DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "ollama")
 DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "http://localhost:11434/v1")
 DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "qwen3:8b")
 
+# ── VLM (视觉模型, Phase 2 图表理解) ──────────────────────────────
+# 默认复用主 LLM 的后端/模式;视觉模型单独配(Qwen2.5-VL via Ollama 或 vLLM)
+VLM_MODE = os.getenv("VLM_MODE", os.getenv("LLM_MODE", "ollama")).lower().strip()
+VLM_BASE_URL = os.getenv("VLM_BASE_URL", DEEPSEEK_BASE_URL)
+VLM_MODEL = os.getenv("VLM_MODEL", "qwen2.5vl:7b")
+VLM_API_KEY = os.getenv("VLM_API_KEY", DEEPSEEK_API_KEY)
+
 # ── Embedding ─────────────────────────────────────────────────────
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", str(BASE_DIR / "data" / "bge-base-en-v1.5"))
 
@@ -25,11 +32,6 @@ CHROMADB_COLLECTION = "coking_papers"
 NEO4J_URI = os.getenv("NEO4J_URI", "bolt://localhost:7687")
 NEO4J_USER = os.getenv("NEO4J_USER", "neo4j")
 NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "deepcoke2024")
-
-# ── ESCARGOT ──────────────────────────────────────────────────────
-ESCARGOT_DIR = Path(os.getenv("ESCARGOT_DIR", str(BASE_DIR.parent.parent.parent / "escargot")))
-ESCARGOT_TIMEOUT = 90  # seconds
-ESCARGOT_MAX_TOKENS = 8000
 
 # ── Retrieval ─────────────────────────────────────────────────────
 RETRIEVAL_TOP_K = 10
