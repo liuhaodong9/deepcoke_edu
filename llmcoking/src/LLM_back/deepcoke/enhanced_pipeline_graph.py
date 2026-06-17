@@ -275,6 +275,14 @@ def node_fast_summary_retrieve(state: EnhancedPipelineState) -> dict:
             "section": c["section"],
             "score": c["score"],
             "text": (c["text"] or "")[:1500],
+            # 结构化定位:前端 [N] click 优先用 page+bbox 直接跳页高亮(无则退回文本搜索)
+            "page": c.get("page_start", 0),
+            "page_end": c.get("page_end", 0),
+            "section_path": c.get("section_path", ""),
+            "block_type": c.get("block_type", "paragraph"),
+            "table_no": c.get("table_no", ""),
+            "figure_no": c.get("figure_no", ""),
+            "bbox": c.get("bbox", []),
         }
         for c in sorted(packed_chunks, key=lambda x: -x["score"])
     ]

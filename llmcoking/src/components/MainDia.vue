@@ -244,6 +244,18 @@ export default {
         // 取该 paper 排序最高的 chunk(LITQA_META.chunks 已按 score 降序)
         const topChunk = (message.litqa.chunks || []).find(c => c.paper_id === paperId)
         this.openPdfPreview(paper, topChunk || null)
+        return
+      }
+
+      // 定量字典表"📄 原文" → 用该条记录的 evidence_quote 在 PDF 里文本高亮
+      // (自包含:paper_id / quote / title 全在 data-* 里,不依赖 message.litqa)
+      const q = target.closest('a.quant-cite')
+      if (q) {
+        e.preventDefault()
+        const paperId = parseInt(q.dataset.paperId, 10)
+        if (!paperId) return
+        const paper = { paper_id: paperId, title: q.dataset.title || '' }
+        this.openPdfPreview(paper, { text: q.dataset.quote || '' })
       }
     },
     async openPdfPreview (paper, chunk = null) {
@@ -283,12 +295,20 @@ export default {
       if (!this.previewPaper || !this.previewPdfBlobUrl) return ''
       const fileUrl = encodeURIComponent(this.previewPdfBlobUrl)
       let url = `/pdfjs/web/viewer.html?file=${fileUrl}`
+      const hash = []
+      // 优先用结构化 page 直接跳页(新 ingestion 才有,0-based → PDF.js 1-based)
+      const pg = this.previewChunk && this.previewChunk.page
+      if (pg !== undefined && pg !== null && pg >= 0) {
+        hash.push('page=' + (pg + 1))
+      }
+      // 再叠加文本搜索做页内高亮(无 page 时它也负责滚动定位)
       if (this.previewChunk && this.previewChunk.text) {
         const snippet = this.extractSearchPhrase(this.previewChunk.text)
         if (snippet) {
-          url += `#search=${encodeURIComponent(snippet)}&phrase=true&highlightAll=true`
+          hash.push('search=' + encodeURIComponent(snippet), 'phrase=true', 'highlightAll=true')
         }
       }
+      if (hash.length) url += '#' + hash.join('&')
       return url
     },
     extractSearchPhrase (text) {
@@ -536,6 +556,13 @@ export default {
         return `__DETAILS_PH_${idx}__`
       })
       preprocessed = preprocessed.replace(/<\/?(?:details|summary)[^>]*>/gi, (match) => {
+        const idx = detailsPlaceholders.length
+        detailsPlaceholders.push(match)
+        return `__DETAILS_PH_${idx}__`
+      })
+      // 保护定量字典 HTML 表整块(含 a.quant-cite data-* 溯源链接),
+      // 否则下面的 < > 转义会把表打成字面文本。表内无嵌套 table,non-greedy 安全。
+      preprocessed = preprocessed.replace(/<table class="quant-table">[\s\S]*?<\/table>/gi, (match) => {
         const idx = detailsPlaceholders.length
         detailsPlaceholders.push(match)
         return `__DETAILS_PH_${idx}__`

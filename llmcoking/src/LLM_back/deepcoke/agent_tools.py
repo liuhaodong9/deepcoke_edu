@@ -928,6 +928,7 @@ def reconstruct_fulltext_with_index(paper_id: int, max_chars: int = MAX_FULLTEXT
     title = ""
     section_groups: dict[str, list[tuple[int, str]]] = defaultdict(list)
     section_order: list[str] = []
+    meta_by_ci: dict[int, dict] = {}   # chunk_index → 结构化定位字段(page/bbox/...)
 
     for i, meta in enumerate(raw["metadatas"]):
         if not title and meta.get("title"):
@@ -937,10 +938,17 @@ def reconstruct_fulltext_with_index(paper_id: int, max_chars: int = MAX_FULLTEXT
             continue
         if section not in section_order:
             section_order.append(section)
-        section_groups[section].append((
-            meta.get("chunk_index", 0),
-            raw["documents"][i],
-        ))
+        ci = meta.get("chunk_index", 0)
+        section_groups[section].append((ci, raw["documents"][i]))
+        meta_by_ci[ci] = {
+            "page_start": meta.get("page_start", 0),
+            "page_end": meta.get("page_end", 0),
+            "section_path": meta.get("section_path", ""),
+            "block_type": meta.get("block_type", "paragraph"),
+            "table_no": meta.get("table_no", ""),
+            "figure_no": meta.get("figure_no", ""),
+            "bbox": _parse_bbox(meta.get("bbox", "")),
+        }
 
     parts = []
     chunks_meta = []
@@ -957,11 +965,20 @@ def reconstruct_fulltext_with_index(paper_id: int, max_chars: int = MAX_FULLTEXT
                 truncated = True
                 break
             parts.append(piece)
+            loc = meta_by_ci.get(chunk_index, {})
             chunks_meta.append({
                 "chunk_index": chunk_index,
                 "section": section,
                 "text": chunk_text,
                 "char_offset": total_chars + len(marker),
+                # 结构化定位(新 ingestion 才有):前端可直接跳页+bbox 高亮
+                "page_start": loc.get("page_start", 0),
+                "page_end": loc.get("page_end", 0),
+                "section_path": loc.get("section_path", ""),
+                "block_type": loc.get("block_type", "paragraph"),
+                "table_no": loc.get("table_no", ""),
+                "figure_no": loc.get("figure_no", ""),
+                "bbox": loc.get("bbox", []),
             })
             total_chars += len(piece)
         if truncated:
@@ -1057,6 +1074,14 @@ def pack_fulltext_evidence(
                 "section": c["section"],
                 "text": c["text"],
                 "score": round(paper_score, 3),
+                # 结构化定位透传(供前端跳页+bbox 高亮)
+                "page_start": c.get("page_start", 0),
+                "page_end": c.get("page_end", 0),
+                "section_path": c.get("section_path", ""),
+                "block_type": c.get("block_type", "paragraph"),
+                "table_no": c.get("table_no", ""),
+                "figure_no": c.get("figure_no", ""),
+                "bbox": c.get("bbox", []),
             })
 
     evidence_text = "".join(parts)
