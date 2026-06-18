@@ -35,10 +35,16 @@ from .agent_tools import (
     tool_read_paper_summary,
     bge_rerank,
     pack_fulltext_evidence,
+    pack_chunk_evidence,
     BGE_RERANK_THRESHOLD,
     RERANK_CANDIDATE_N,
     FULLTEXT_BUDGET_TOKENS,
 )
+
+# 多篇整合:每篇装 top-M chunk 而非全文(让 6-8 篇都进 prompt)
+CHUNKS_PER_PAPER = 3
+# 选篇保底:rerank 后至少带这么多篇进证据(避免被阈值卡到 1 篇,牺牲多篇整合)
+MIN_PAPERS_FLOOR = 5
 from .term_fix import fix_terms
 
 # 复用旧 pipeline_graph 里的辅助函数和节点
@@ -169,6 +175,16 @@ def node_fast_summary_retrieve(state: EnhancedPipelineState) -> dict:
     reranked = bge_rerank(rerank_query, rerank_docs)
     # 过阈值
     selected = [(pid, s) for pid, s in reranked if s >= BGE_RERANK_THRESHOLD]
+    # 保底:不足 MIN_PAPERS_FLOOR 篇时,从 rerank top 补齐(避免被阈值卡到 1 篇,
+    # 牺牲多篇整合)。候选本来就是检索投票出来的,补进来的也是相关的。
+    if len(selected) < MIN_PAPERS_FLOOR and reranked:
+        have = {pid for pid, _ in selected}
+        for pid, s in reranked:
+            if pid not in have:
+                selected.append((pid, s))
+                have.add(pid)
+            if len(selected) >= MIN_PAPERS_FLOOR:
+                break
 
     if not selected:
         logger.info(
@@ -216,17 +232,20 @@ def node_fast_summary_retrieve(state: EnhancedPipelineState) -> dict:
             "summary_type": summary_type_by_pid.get(pid, ""),
         })
 
-    evidence_text, packed_papers, packed_chunks = pack_fulltext_evidence(
-        ranked_papers, budget_tokens=FULLTEXT_BUDGET_TOKENS
+    # 每篇只装 top-M 相关 chunk(不是全文),让多篇都进 prompt 做整合
+    chunk_query = (eng_queries[0] if eng_queries else state.get("question", "")) or rerank_query
+    evidence_text, packed_papers, packed_chunks = pack_chunk_evidence(
+        ranked_papers, query=chunk_query,
+        budget_tokens=FULLTEXT_BUDGET_TOKENS, chunks_per_paper=CHUNKS_PER_PAPER,
     )
 
     if not packed_papers:
-        return _fallback_to_retrieve(state, out, steps_c, reason="no fulltext available")
+        return _fallback_to_retrieve(state, out, steps_c, reason="no chunk evidence available")
 
     steps_c[0]['done'] = True
     used_tokens = sum(len(p) for p in [evidence_text]) * 0.45 // 1
     steps_c[0]['text'] = (
-        f"C. 装入 {len(packed_papers)} 篇全文 "
+        f"C. 装入 {len(packed_papers)} 篇 ×{CHUNKS_PER_PAPER} 相关段 "
         f"(~{int(used_tokens) // 1000}K tokens,{len(packed_chunks)} 段)"
     )
     steps_c[0]['pct'] = 70

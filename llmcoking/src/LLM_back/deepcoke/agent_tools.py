@@ -1099,3 +1099,74 @@ def pack_fulltext_evidence(
         f"{len(packed_chunks)} chunks, {used_tokens} tokens (budget {budget_tokens})"
     )
     return evidence_text, packed_papers, packed_chunks
+
+
+def pack_chunk_evidence(
+    ranked_papers: list[dict],
+    query: str,
+    budget_tokens: int = FULLTEXT_BUDGET_TOKENS,
+    chunks_per_paper: int = 3,
+) -> tuple[str, list[dict], list[dict]]:
+    """每篇只装 top-M 相关 chunk(不是全文),让 K 篇都进 prompt 做多篇整合。
+
+    相比 pack_fulltext_evidence:全文每篇 ~18K token,预算只够 1-2 篇;
+    本函数每篇 ~3 段 ×500 token,预算够装 6-8 篇 → 答案能整合多篇。
+    每段保留 page/bbox/section_path,[N] 引用仍可精确跳页高亮。
+
+    返回 (evidence_text, packed_papers, packed_chunks),与 pack_fulltext_evidence 同形状。
+    """
+    from .vectorstore.retriever import retrieve
+
+    packed_papers, packed_chunks, parts = [], [], []
+    used_tokens = 0
+    for paper in ranked_papers:
+        pid = paper["paper_id"]
+        try:
+            chs = retrieve(query, top_k=chunks_per_paper, where={"paper_id": int(pid)})
+        except Exception as e:
+            logger.warning(f"[pack_chunk] retrieve paper {pid} failed: {e}")
+            chs = []
+        # 过滤噪声章节 + 太短的段
+        chs = [c for c in chs
+               if (c.section or "").lower() not in SKIP_SECTIONS_FOR_FULLTEXT
+               and len((c.text or "").strip()) > 40]
+        if not chs:
+            continue
+
+        ref_num = len(packed_papers) + 1
+        header = f"\n## Paper [{ref_num}] {paper.get('title', '')} ({paper.get('year', '?')})\n"
+        block_parts = [header]
+        for c in chs:
+            block_parts.append(f"[#{c.chunk_index}] {c.text}\n")
+        block = "".join(block_parts)
+        block_tokens = estimate_tokens(block)
+
+        if used_tokens + block_tokens > budget_tokens and packed_papers:
+            break  # 预算满,停(至少装了 1 篇)
+
+        parts.append(block)
+        used_tokens += block_tokens
+        packed_papers.append({**paper, "ref_num": ref_num, "cited": True})
+        for c in chs:
+            packed_chunks.append({
+                "paper_id": pid,
+                "ref_num": ref_num,
+                "chunk_index": c.chunk_index,
+                "section": c.section,
+                "text": c.text,
+                "score": round(float(c.score), 3),
+                "page_start": getattr(c, "page_start", 0),
+                "page_end": getattr(c, "page_end", 0),
+                "section_path": getattr(c, "section_path", ""),
+                "block_type": getattr(c, "block_type", "paragraph"),
+                "table_no": getattr(c, "table_no", ""),
+                "figure_no": getattr(c, "figure_no", ""),
+                "bbox": _parse_bbox(getattr(c, "bbox", "")),
+            })
+
+    evidence_text = "".join(parts)
+    logger.info(
+        f"[pack_chunk] packed {len(packed_papers)} papers, "
+        f"{len(packed_chunks)} chunks, {used_tokens} tokens (budget {budget_tokens})"
+    )
+    return evidence_text, packed_papers, packed_chunks
