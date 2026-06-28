@@ -503,10 +503,85 @@ def _get_paper_chunks(paper_id: int) -> list:
     return out
 
 
-def tool_search_pdf(query: str, paper_id: int = None, top_k: int = 8) -> dict:
-    """检索相关片段(可限定单篇),返回带页码/章节/bbox 的片段供溯源。"""
+def _chunk_from_bm25(doc: str, m: dict, score: float) -> RetrievedChunk:
+    """从 BM25 命中的 (document, metadata) 造一个 RetrievedChunk(供 hybrid 融合)。"""
+    return RetrievedChunk(
+        text=doc,
+        paper_id=m.get("paper_id", 0),
+        title=m.get("title", ""),
+        section=m.get("section", ""),
+        category=m.get("category", ""),
+        year=m.get("year", 0),
+        authors=m.get("authors", ""),
+        keywords=m.get("keywords", ""),
+        score=score,
+        chunk_index=m.get("chunk_index", 0),
+        page_start=m.get("page_start", 0),
+        page_end=m.get("page_end", 0),
+        section_path=m.get("section_path", ""),
+        block_type=m.get("block_type", "paragraph"),
+        table_no=m.get("table_no", ""),
+        figure_no=m.get("figure_no", ""),
+        bbox=m.get("bbox", ""),
+    )
+
+
+def hybrid_search(query: str, paper_id: int = None, top_k: int = 8,
+                  bm25_pool: int = 30) -> list[RetrievedChunk]:
+    """dense(语义) + BM25(关键词) 混合检索,RRF 融合。
+
+    - dense 先多召回 (top_k*3);BM25 在 dense 召回到的 paper 范围内召回(限定单篇则只在该篇)。
+    - 用 RRF(reciprocal rank fusion)按排名融合,BM25 把"语义召回但排名靠后/漏掉"的关键词命中提前。
+    - BM25 索引缺失或异常 → 自动退化成纯语义(安全)。
+    - dense 命中保留余弦分;BM25-only 命中把 BM25 分归一化到 dense 分数区间(供下游按 score 投票)。
+    """
     where = {"paper_id": int(paper_id)} if paper_id else None
-    chunks = retrieve(query, top_k=int(top_k), where=where)
+    dense = retrieve(query, top_k=max(int(top_k) * 3, 20), where=where)
+    pids = [int(paper_id)] if paper_id else list({c.paper_id for c in dense if c.paper_id})
+
+    bm = []
+    if pids:
+        try:
+            from .literature_qa.service import _bm25_recall
+            bm = _bm25_recall(query, pids, bm25_pool)   # [(chunk_id, doc, meta, score)]
+        except Exception as e:
+            logger.warning(f"[hybrid] BM25 不可用,退化纯语义: {e}")
+    if not bm:
+        return dense[:int(top_k)]
+
+    def _k_dense(c):
+        return f"{c.paper_id}_{c.chunk_index}"
+
+    def _k_bm(m):
+        return f"{m.get('paper_id')}_{m.get('chunk_index')}"
+
+    # BM25 分归一化到 dense 余弦分区间(供投票/展示;融合排序用 RRF 不依赖它)
+    d_scores = [float(c.score) for c in dense] or [0.5]
+    s_lo, s_hi = min(d_scores), max(d_scores)
+    bm_scores = [s for *_, s in bm]
+    b_lo, b_hi = min(bm_scores), max(bm_scores)
+
+    def _norm(s):
+        return s_lo + (s_hi - s_lo) * ((s - b_lo) / (b_hi - b_lo)) if b_hi > b_lo else (s_lo + s_hi) / 2
+
+    rank_dense = {_k_dense(c): r for r, c in enumerate(dense)}
+    rank_bm = {_k_bm(m): r for r, (_cid, _doc, m, _s) in enumerate(bm)}
+    obj = {_k_dense(c): c for c in dense}
+    for _cid, doc, m, s in bm:
+        k = _k_bm(m)
+        if k not in obj:                       # BM25-only 命中 → 造对象进池
+            obj[k] = _chunk_from_bm25(doc, m, _norm(s))
+
+    K = 60
+    keys = set(rank_dense) | set(rank_bm)
+    fused = sorted(keys, key=lambda k: -(1.0 / (K + rank_dense.get(k, 1e9))
+                                         + 1.0 / (K + rank_bm.get(k, 1e9))))
+    return [obj[k] for k in fused if k in obj][:int(top_k)]
+
+
+def tool_search_pdf(query: str, paper_id: int = None, top_k: int = 8) -> dict:
+    """检索相关片段(可限定单篇),返回带页码/章节/bbox 的片段供溯源(dense+BM25 混合)。"""
+    chunks = hybrid_search(query, paper_id=paper_id, top_k=int(top_k))
     hits = [{
         "paper_id": c.paper_id,
         "chunk_index": c.chunk_index,

@@ -28,11 +28,15 @@ def _norm(s: str) -> str:
     return re.sub(r"\s+", " ", (s or "").lower()).strip()
 
 
-def eval_retrieval(item: GoldItem, top_k: int) -> dict:
-    """检索命中 + 页码正确。"""
-    from ...vectorstore.retriever import retrieve
+def eval_retrieval(item: GoldItem, top_k: int, retriever: str = "hybrid") -> dict:
+    """检索命中 + 页码正确。retriever: hybrid(dense+BM25,默认,对齐生产) | dense(纯语义)。"""
     q = item.query or item.question
-    chunks = retrieve(q, top_k=top_k)
+    if retriever == "dense":
+        from ...vectorstore.retriever import retrieve
+        chunks = retrieve(q, top_k=top_k)
+    else:
+        from ...agent_tools import hybrid_search
+        chunks = hybrid_search(q, top_k=top_k)
 
     sub = _norm(item.expected_substring)
     hit_chunk = None
@@ -115,14 +119,14 @@ def eval_chart(item: GoldItem) -> dict:
 
 
 # ──────────────────────────────────────────────────────────────────
-def run(gold_path: str, top_k: int = 8):
+def run(gold_path: str, top_k: int = 8, retriever: str = "hybrid"):
     items = load_gold_set(gold_path)
     by_type = defaultdict(list)
-    print(f"加载 gold set: {len(items)} 题  (top_k={top_k})\n")
+    print(f"加载 gold set: {len(items)} 题  (top_k={top_k}, retriever={retriever})\n")
 
     for it in items:
         if it.type == "retrieval":
-            r = eval_retrieval(it, top_k)
+            r = eval_retrieval(it, top_k, retriever)
         elif it.type == "table":
             r = eval_table(it)
         elif it.type == "ocr":
@@ -172,8 +176,10 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("gold_path", help="gold set JSON 路径")
     ap.add_argument("--top_k", type=int, default=8)
+    ap.add_argument("--retriever", choices=["hybrid", "dense"], default="hybrid",
+                    help="hybrid=dense+BM25(默认,对齐生产);dense=纯语义(基线对比)")
     args = ap.parse_args()
-    run(args.gold_path, args.top_k)
+    run(args.gold_path, args.top_k, args.retriever)
 
 
 if __name__ == "__main__":

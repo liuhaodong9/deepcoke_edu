@@ -568,7 +568,7 @@ async def ws_duplex(websocket: WebSocket):
     })
 
     # 进入即念欢迎语：字幕（llm_delta/llm_done）+ 豆包 TTS（tts_audio）
-    greeting = "您好！我是焦化大语言智能问答与分析系统DeepCoke，有什么可以帮助你的？"
+    greeting = "您好！我是高校智慧化工软件平台 DeepResearch，有什么可以帮助你的？"
     try:
         await session.send({"type": "state", "state": "speaking"})
         await session.send({"type": "llm_delta", "text": greeting})

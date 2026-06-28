@@ -301,7 +301,7 @@ async def _simple_chat(question: str) -> AsyncGenerator[str, None]:
     from .llm_client import chat
 
     system_prompt = (
-        "你是焦化大语言智能问答与分析系统DeepCoke，由苏州龙泰氢一能源科技有限公司研发。"
+        "你是高校智慧化工软件平台 DeepResearch，由苏州龙泰氢一能源科技有限公司研发。"
         "以下是对你输出的强制格式要求："
         "1. 任何数学公式一定要使用 $$ 公式 $$ 包裹\n"
         "2. 多行代码一定使用三重反引号 ``` 语言 来包裹\n"

@@ -36,6 +36,7 @@ from .agent_tools import (
     bge_rerank,
     pack_fulltext_evidence,
     pack_chunk_evidence,
+    hybrid_search,
     BGE_RERANK_THRESHOLD,
     RERANK_CANDIDATE_N,
     FULLTEXT_BUDGET_TOKENS,
@@ -112,7 +113,7 @@ def node_fast_summary_retrieve(state: EnhancedPipelineState) -> dict:
     query_recalls: list[dict] = []
     try:
         for q in eng_queries:
-            recalled = retrieve(q, top_k=VOTE_POOL_PER_Q)
+            recalled = hybrid_search(q, top_k=VOTE_POOL_PER_Q)   # dense+BM25 混合
             all_chunks.extend(recalled)
             per_paper: dict[int, float] = {}
             for c in recalled:

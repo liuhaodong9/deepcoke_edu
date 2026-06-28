@@ -18,7 +18,7 @@ from .vectorstore.retriever import retrieve, RetrievedChunk
 from .knowledge_graph.neo4j_client import find_related_papers
 from .generation.answer_generator import generate_answer_stream
 from .followup.followup_generator import generate_followup_questions, format_followup_block
-from .reasoning.escargot_runner import run_escargot_reasoning
+# ESCARGOT 推理模块已移除 (2026-06-06),agent_loop 已覆盖多步推理
 from .term_fix import fix_terms
 
 logger = logging.getLogger("deepcoke.pipeline")
@@ -31,6 +31,8 @@ logger = logging.getLogger("deepcoke.pipeline")
 class PipelineState(TypedDict):
     """LangGraph 流转状态。output 用 operator.add 累加，每个节点追加输出片段。"""
     question: str
+    # 多轮对话历史: [{"user_message": "...", "bot_response": "..."}],按时间顺序老的在前
+    history: list
     question_type: str
     # Supervisor 多 agent 计划（Phase 2）
     agent_plan: list[str]
@@ -41,6 +43,7 @@ class PipelineState(TypedDict):
     key_concepts: list[str]
     chunks: list              # RetrievedChunk 列表
     kg_context: str
+    structured_evidence: str  # 结构化字典命中（Markdown 表）；未命中为 ""
     reasoning_trace: str
     # 累计输出（每个节点 append 新的片段）
     output: Annotated[list[str], operator.add]
@@ -140,7 +143,7 @@ def node_edu_optimization(state: PipelineState) -> dict:
     ]
 
     system_prompt = (
-        "你是焦化大语言智能问答与分析系统DeepCoke，由苏州龙泰氢一能源科技有限公司研发。"
+        "你是高校智慧化工软件平台 DeepResearch，由苏州龙泰氢一能源科技有限公司研发。"
         "以下是对你输出的强制格式要求："
         "1. 任何数学公式一定要使用 $$ 公式 $$ 包裹\n"
         "2. 多行代码一定使用三重反引号 ``` 语言 来包裹\n"
@@ -298,13 +301,48 @@ def node_literature_qa(state: PipelineState) -> dict:
     }
     out.append(f"<!--LITQA_META:{_json.dumps(meta_payload, ensure_ascii=False)}-->\n")
 
+    # 阶段 2.5: 结构化字典查询（NL→SQL 命中 coal_samples / coke_experiments / carbon_microstructure）
+    structured_md = ""
+    structured_rows = 0
+    try:
+        from .literature_qa.quant_query import lookup_structured
+        sl = lookup_structured(question)
+        if sl.get("hit"):
+            structured_md = sl.get("markdown") or ""
+            structured_rows = len(sl.get("rows") or [])
+        logger.info(
+            f"[litqa] structured_lookup hit={sl.get('hit')} rows={structured_rows} "
+            f"sql={(sl.get('sql') or '')[:120]} err={sl.get('error', '')}"
+        )
+    except Exception as e:
+        logger.warning(f"[litqa] structured_lookup non-fatal: {e}")
+
+    if structured_md:
+        out.append(
+            "<details class=\"structured-evidence\" open><summary>📊 结构化字典命中（"
+            f"{structured_rows} 条记录）</summary>\n\n"
+            + structured_md
+            + "\n\n</details>\n\n"
+        )
+
     # 阶段 3: LLM 流式生成回答(自动判定 list/compare/normal mode)
     prompt, mode = litqa.build_prompt(question, chunks, papers_by_id)
+    # 字典命中时，把表前置到 prompt 顶部（最高优先级证据）
+    if structured_md:
+        prompt = (
+            "【结构化字典 — 最高优先级证据】\n"
+            "下面是从文献抽取的精确数值表。请优先引用这些数值；表中没有覆盖的方面再用下方文献片段补充。\n\n"
+            f"{structured_md}\n\n"
+            + "─" * 40 + "\n\n"
+            + prompt
+        )
     mode_label = {
         'list': '文献清单模式',
         'compare': '综述/对比模式',
         'normal': '基于文献片段',
     }.get(mode, '基于文献片段')
+    if structured_md:
+        mode_label += " + 结构化字典"
     steps3 = [{'text': f'阶段 3/3：{mode_label}生成回答…', 'done': False, 'pct': 70}]
     out.append(_progress_html(steps3))
 
@@ -345,7 +383,7 @@ def node_simple_chat(state: PipelineState) -> dict:
     from .llm_client import chat
 
     system_prompt = (
-        "你是焦化大语言智能问答与分析系统DeepCoke，由苏州龙泰氢一能源科技有限公司研发。"
+        "你是高校智慧化工软件平台 DeepResearch，由苏州龙泰氢一能源科技有限公司研发。"
         "以下是对你输出的强制格式要求："
         "1. 任何数学公式一定要使用 $$ 公式 $$ 包裹\n"
         "2. 多行代码一定使用三重反引号 ``` 语言 来包裹\n"
@@ -374,21 +412,33 @@ def node_translate(state: PipelineState) -> dict:
     steps = [{'text': '正在提取关键词并翻译检索语句…', 'done': False, 'pct': 15}]
     out = [_progress_html(steps)]
 
-    translated = translate_query(state["question"])
+    history = state.get("history") or []
+    translated = translate_query(state["question"], history=history)
     english_queries = translated["english_queries"]
     key_concepts = translated["key_concepts"]
+    resolved = translated.get("resolved_question") or state["question"]
 
     steps[0]['done'] = True
     steps[0]['text'] = f"关键词：{', '.join(key_concepts[:5])}"
     steps[0]['pct'] = 25
     out.append(_progress_html(steps))
 
-    logger.info(f"[translate] queries={english_queries}, concepts={key_concepts}")
-    return {
+    if resolved != state["question"]:
+        logger.info(
+            f"[translate] resolved={resolved!r} queries={english_queries}, concepts={key_concepts}"
+        )
+    else:
+        logger.info(f"[translate] queries={english_queries}, concepts={key_concepts}")
+    out_state = {
         "english_queries": english_queries,
         "key_concepts": key_concepts,
         "output": out,
     }
+    # 跨轮补全:把 state["question"] 替换成 resolved_question,
+    # 下游 generate 节点用补全后的版本(LLM 才能理解 "它/他" 指什么)
+    if resolved and resolved != state["question"]:
+        out_state["question"] = resolved
+    return out_state
 
 
 def node_retrieve(state: PipelineState) -> dict:
@@ -534,36 +584,47 @@ def node_kg_lookup(state: PipelineState) -> dict:
     return {"kg_context": kg_context, "output": out}
 
 
-def node_reason(state: PipelineState) -> dict:
-    """Node: ESCARGOT 深度推理（仅复杂问题）。"""
-    steps = [{'text': '正在进行深度推理（ESCARGOT）…', 'done': False, 'pct': 65}]
+def node_structured_lookup(state: PipelineState) -> dict:
+    """Node: 结构化字典查询（NL→SQL 命中 coal_samples / coke_experiments / carbon_microstructure）。
+
+    命中时把 Markdown 表注入 structured_evidence，下游 generate 优先引用。
+    未命中或异常时静默跳过，pipeline 照常走 RAG 路径。
+    """
+    from .literature_qa.quant_query import lookup_structured
+
+    steps = [{'text': '正在查询结构化字典…', 'done': False, 'pct': 62}]
     out = [_progress_html(steps)]
 
-    reasoning_trace = ""
+    structured_evidence = ""
+    hit_rows = 0
     try:
-        reasoning_trace = run_escargot_reasoning(
-            state["question"],
-            answer_type="natural",
-            num_strategies=2,
-            timeout=60,
+        result = lookup_structured(state["question"])
+        if result.get("hit"):
+            structured_evidence = result.get("markdown", "") or ""
+            hit_rows = len(result.get("rows") or [])
+        # debug 日志
+        logger.info(
+            f"[structured_lookup] hit={result.get('hit')} rows={hit_rows} "
+            f"sql={(result.get('sql') or '')[:120]} err={result.get('error', '')}"
         )
-        if reasoning_trace and "超时" not in reasoning_trace:
-            steps[0]['done'] = True
-            steps[0]['text'] = "深度推理完成"
-            steps[0]['pct'] = 85
-        else:
-            reasoning_trace = ""
-            steps[0]['done'] = True
-            steps[0]['text'] = "深度推理：超时跳过"
-            steps[0]['pct'] = 85
     except Exception as e:
-        steps[0]['done'] = True
-        steps[0]['text'] = "深度推理：跳过（异常）"
-        steps[0]['pct'] = 85
-        logger.warning(f"[reason] non-fatal: {e}")
+        logger.warning(f"[structured_lookup] non-fatal: {e}")
 
+    if structured_evidence:
+        steps[0]['text'] = f"结构化字典：命中 {hit_rows} 条记录"
+    else:
+        steps[0]['text'] = "结构化字典：未命中（走 RAG 文献证据）"
+    steps[0]['done'] = True
+    steps[0]['pct'] = 65
     out.append(_progress_html(steps))
-    return {"reasoning_trace": reasoning_trace, "output": out}
+
+    return {"structured_evidence": structured_evidence, "output": out}
+
+
+def node_reason(state: PipelineState) -> dict:
+    """Node: 已废弃 — ESCARGOT 推理移除后变成 no-op pass-through。
+    保留节点接口避免破坏 LangGraph edges。enhanced_pipeline 路径根本不会到这里。"""
+    return {"reasoning_trace": "", "output": []}
 
 
 def node_generate(state: PipelineState) -> dict:
@@ -581,6 +642,15 @@ def node_generate(state: PipelineState) -> dict:
     if thinking:
         out.append(thinking)
 
+    # 结构化字典命中时，前置一个可见的"字典证据"展开块
+    structured_evidence = state.get("structured_evidence", "") or ""
+    if structured_evidence:
+        out.append(
+            "<details class=\"structured-evidence\"><summary>📊 结构化字典命中</summary>\n\n"
+            + structured_evidence
+            + "\n\n</details>\n\n"
+        )
+
     # 流式生成回答(用 tail buffer 防术语跨 piece 切碎,piece-level 兜底替换)
     _fix_buf = ""
     _BUF_TAIL = 20
@@ -589,6 +659,7 @@ def node_generate(state: PipelineState) -> dict:
         chunks=state.get("chunks", []),
         kg_context=state.get("kg_context", ""),
         reasoning_trace=state.get("reasoning_trace", ""),
+        structured_evidence=structured_evidence,
     ):
         _fix_buf += piece
         if len(_fix_buf) > _BUF_TAIL:
@@ -661,6 +732,7 @@ def build_graph() -> StateGraph:
     g.add_node("translate", node_translate)
     g.add_node("retrieve", node_retrieve)
     g.add_node("kg_lookup", node_kg_lookup)
+    g.add_node("structured_lookup", node_structured_lookup)
     g.add_node("reason", node_reason)
     g.add_node("generate", node_generate)
     g.add_node("followup", node_followup)
@@ -681,10 +753,11 @@ def build_graph() -> StateGraph:
     g.add_edge("simple_chat", END)
     g.add_edge("literature_qa", END)
 
-    # RAG 链：translate → retrieve → kg_lookup → (reason | generate) → followup → END
+    # RAG 链：translate → retrieve → kg_lookup → structured_lookup → (reason | generate) → followup → END
     g.add_edge("translate", "retrieve")
     g.add_edge("retrieve", "kg_lookup")
-    g.add_conditional_edges("kg_lookup", route_after_kg, {
+    g.add_edge("kg_lookup", "structured_lookup")
+    g.add_conditional_edges("structured_lookup", route_after_kg, {
         "reason": "reason",
         "generate": "generate",
     })
@@ -703,14 +776,17 @@ _graph = build_graph()
 # 对外接口（保持与旧 pipeline.py 完全相同的签名）
 # ══════════════════════════════════════════════════════════════════
 
-async def process_question(question: str) -> AsyncGenerator[str, None]:
+async def process_question(question: str, history: list | None = None) -> AsyncGenerator[str, None]:
     """
     LangGraph 版 pipeline 入口。
-    签名与旧版 pipeline.process_question 完全一致，
-    FastAPI 端无需改动。
+    Args:
+        question: 用户当前问题
+        history: 多轮对话历史(可选,用于 query 跨轮补全),格式:
+                 [{"user_message": "...", "bot_response": "..."}],按时间顺序
     """
     initial_state: PipelineState = {
         "question": question,
+        "history": history or [],
         "question_type": "",
         "agent_plan": [],
         "agent_plan_idx": 0,

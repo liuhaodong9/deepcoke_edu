@@ -1,5 +1,6 @@
-from fastapi import FastAPI, Depends  # 导入 FastAPI 和 Depends 依赖
+from fastapi import FastAPI, Depends, HTTPException, Header  # 导入 FastAPI 和 Depends 依赖
 from sqlalchemy import create_engine, Column, Integer, String, Text, TIMESTAMP, ForeignKey  # 导入 SQLAlchemy 组件
+from sqlalchemy import text as _sql_text_top  # 用于启动时 ALTER TABLE 加列
 from sqlalchemy.ext.declarative import declarative_base  # 定义数据库模型
 from sqlalchemy.orm import sessionmaker, Session, relationship  # 处理数据库会话
 from uuid import uuid4  # 生成唯一 session_id（Python 内置库，无需安装）
@@ -9,13 +10,26 @@ from datetime import datetime  # 导入 datetime
 from openai import OpenAI  # DeepSeek 兼容 OpenAI API
 from starlette.responses import StreamingResponse
 import asyncio
+import os
 import traceback
 import logging
 from pydantic import BaseModel
+from typing import List, Optional
 import hashlib
 
+# ── Admin papers router (上传 PDF/文档管理) ─────────────────────────
+from admin_papers import router as admin_papers_router
+
 # ── DeepCoke Pipeline ──────────────────────────────────────────────
-from deepcoke.pipeline_graph import process_question  # LangGraph 版 pipeline
+# USE_ENHANCED_PIPELINE=true → 走 PaperQA2/NotebookLM 风格的 agent 全文阅读
+# 否则 → 走旧版 chunk-based RAG
+_USE_ENHANCED = os.getenv("USE_ENHANCED_PIPELINE", "false").lower() in ("1", "true", "yes")
+if _USE_ENHANCED:
+    from deepcoke.enhanced_pipeline_graph import process_question  # Agent 全文阅读
+    logging.getLogger("deepcoke").info("[boot] Using ENHANCED pipeline (agent full-text)")
+else:
+    from deepcoke.pipeline_graph import process_question  # 旧版 chunk RAG
+    logging.getLogger("deepcoke").info("[boot] Using LEGACY pipeline (chunk RAG)")
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("deepcoke")
@@ -30,10 +44,11 @@ DEEPSEEK_BASE_URL = _cfg.DEEPSEEK_BASE_URL
 client = OpenAI(api_key=DEEPSEEK_API_KEY, base_url=DEEPSEEK_BASE_URL)
 
 # 允许前端访问后端（CORS 处理）
+# allow_origins=['*'] 不能和 allow_credentials=True 共用，这里前端走相对路径不带 cookie，credentials 关掉即可
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # 允许所有前端访问
-    allow_credentials=True,
+    allow_origins=["*"],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -52,12 +67,29 @@ class User(Base):
     nickname = Column(String(50), nullable=True)
     created_at = Column(TIMESTAMP, server_default=func.now())
 
+# 用户 token 表（鉴权）— 由 auth.make_user_token_model 构造
+from auth import (
+    make_user_token_model, make_auth_middleware,
+    issue_token as _issue_token, revoke_user_tokens as _revoke_user_tokens,
+)
+UserToken = make_user_token_model(Base)
+
+# 定义文件夹表（用户的会话分类）
+class ChatFolder(Base):
+    __tablename__ = "chat_folders"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(String(50), nullable=False)
+    name = Column(String(50), nullable=False)
+    created_at = Column(TIMESTAMP, server_default=func.now())
+
 # 定义会话表（存储用户 ID 和会话 ID）
 class ChatSession(Base):
     __tablename__ = "chat_sessions"  # 表名
     id = Column(Integer, primary_key=True, autoincrement=True)  # 主键，自增
     user_id = Column(String(50), nullable=False)  # 用户 ID（标识用户）
     session_id = Column(String(50), unique=True, nullable=False)  # 唯一会话 ID（用于存储对话）
+    folder_id = Column(Integer, ForeignKey("chat_folders.id"), nullable=True)  # 所属文件夹（NULL 表示根目录）
+    title = Column(String(100), nullable=True)  # 自定义会话名（NULL 时取首条消息）
 
 # 定义消息表（存储聊天记录）
 class Message(Base):
@@ -69,10 +101,34 @@ class Message(Base):
     timestamp = Column(TIMESTAMP, nullable=False)  # 记录时间戳
 
 # 延迟初始化数据库（在 FastAPI 启动事件中执行，避免模块加载时 MySQL 未启动导致崩溃）
+def _migrate_add_columns(conn):
+    """给老库 chat_sessions 补 folder_id / title 列；老库没有就跳过。MySQL 没有 IF NOT EXISTS，捕获异常即可。"""
+    for stmt in (
+        "ALTER TABLE chat_sessions ADD COLUMN folder_id INT NULL",
+        "ALTER TABLE chat_sessions ADD COLUMN title VARCHAR(100) NULL",
+    ):
+        try:
+            conn.execute(_sql_text_top(stmt))
+        except Exception as _e:
+            # 1060 Duplicate column = 已经迁过，忽略
+            if "Duplicate column" not in str(_e) and "1060" not in str(_e):
+                logger.warning(f"migrate skipped: {stmt} -> {_e}")
+
+# 注册鉴权中间件：除 /login /register /docs /papers/*/pdf 外的接口都需要 Bearer token
+# LEGACY_BYPASS_TOKEN（默认 true）允许老前端的固定字符串 token，公网上线时设环境变量 AUTH_LEGACY_BYPASS=false
+app.middleware("http")(make_auth_middleware(SessionLocal, UserToken))
+
+# 挂载 admin papers 子路由(上传 PDF / 列表 / 删除 / 重抽 summary)
+app.include_router(admin_papers_router)
+
+
 @app.on_event("startup")
 def _startup_init_db():
     try:
         Base.metadata.create_all(bind=engine)
+        # 老库补列
+        with engine.begin() as conn:
+            _migrate_add_columns(conn)
         # 创建默认管理员账号
         db = SessionLocal()
         try:
@@ -117,18 +173,33 @@ class RegisterForm(BaseModel):
 def login(form: LoginForm, db: Session = Depends(get_db)):
     """
     数据库验证登录：
-    - 成功返回: {"status":"ok","token":"...","username":"...","nickname":"..."}
+    - 成功返回: {"status":"ok","token":"<urlsafe_32>","username":"...","nickname":"..."}
+      token 是真实签发的随机串，30 天有效（环境变量 AUTH_TOKEN_TTL_DAYS 可调）
     - 失败返回: "fail"
     """
     user = db.query(User).filter(User.username == form.username).first()
     if user and user.password_hash == hash_password(form.password):
+        token = _issue_token(db, UserToken, user.username)
         return {
             "status": "ok",
-            "token": "I have login",
+            "token": token,
             "username": user.username,
-            "nickname": user.nickname or user.username
+            "nickname": user.nickname or user.username,
         }
     return "fail"
+
+
+@app.post("/logout")
+def logout(db: Session = Depends(get_db), authorization: str = Header(default="")):
+    """注销：作废当前 token 对应用户的所有 token。"""
+    token = authorization.split(" ", 1)[1].strip() if authorization.lower().startswith("bearer ") else ""
+    if not token:
+        return {"status": "ok", "revoked": 0}
+    rec = db.query(UserToken).filter(UserToken.token == token).first()
+    if not rec:
+        return {"status": "ok", "revoked": 0}
+    n = _revoke_user_tokens(db, UserToken, rec.user_id)
+    return {"status": "ok", "revoked": n}
 
 @app.post("/register")
 def register(form: RegisterForm, db: Session = Depends(get_db)):
@@ -167,7 +238,7 @@ async def create_session(user_id: str, db: Session = Depends(get_db)):
     welcome_message = Message(
         session_id=session_id,
         user_message="",  # 空用户消息
-        bot_response="您好！我是焦化大语言智能问答与分析系统DeepCoke，有什么可以帮助你的？",  # ✅ 直接存入 bot 消息
+        bot_response="您好！我是高校智慧化工软件平台 DeepResearch，有什么可以帮助你的？",  # ✅ 直接存入 bot 消息
         timestamp=datetime.utcnow()
     )
     db.add(welcome_message)
@@ -178,6 +249,25 @@ async def create_session(user_id: str, db: Session = Depends(get_db)):
 # ✅ **DeepCoke 知识增强问答端点（RAG + ESCARGOT推理 + 知识图谱）**
 @app.post("/chat/")
 async def chat(session_id: str, user_message: str, db: Session = Depends(get_db)):
+    # 读取最近 3 轮历史(给 query 跨轮补全用),按时间正序排列
+    history = []
+    try:
+        rows = (
+            db.query(Message)
+            .filter(Message.session_id == session_id)
+            .order_by(Message.timestamp.desc())
+            .limit(3)
+            .all()
+        )
+        # rows 是降序(最新在前),反转成升序(老的在前)
+        for row in reversed(rows):
+            history.append({
+                "user_message": row.user_message or "",
+                "bot_response": row.bot_response or "",
+            })
+    except Exception as _e:
+        logger.warning(f"load history skipped: {_e}")
+
     async def generate():
         bot_response_parts = []
 
@@ -185,7 +275,7 @@ async def chat(session_id: str, user_message: str, db: Session = Depends(get_db)
             # 使用 DeepCoke 知识增强管线处理问题
             # 管线内部完成：问题分类 → 中英翻译 → 向量检索 + KG检索 →
             # ESCARGOT推理(复杂问题) → 证据驱动回答生成 → 延伸问题生成
-            async for piece in process_question(user_message):
+            async for piece in process_question(user_message, history=history):
                 bot_response_parts.append(piece)
                 yield piece
                 await asyncio.sleep(0)
@@ -198,7 +288,7 @@ async def chat(session_id: str, user_message: str, db: Session = Depends(get_db)
                 fallback_stream = client.chat.completions.create(
                     model="deepseek-chat",
                     messages=[
-                        {"role": "system", "content": "你是焦化大语言智能问答与分析系统DeepCoke，由苏州龙泰氢一能源科技有限公司研发。"},
+                        {"role": "system", "content": "你是高校智慧化工软件平台 DeepResearch，由苏州龙泰氢一能源科技有限公司研发。"},
                         {"role": "user", "content": user_message},
                     ],
                     stream=True,
@@ -257,7 +347,8 @@ async def get_user_sessions(user_id: str, db: Session = Depends(get_db)):
     """
     - 查询某个用户的所有会话
     - 返回按照最后的消息时间排序（最新的在上面）
-    - 使用该会话的第一条用户输入作为名称
+    - 自定义 title 优先，否则取首条用户消息前 10 字
+    - 同时返回 folder_id 以便前端按文件夹分组
     """
     sessions = db.query(ChatSession).filter(ChatSession.user_id == user_id).all()
 
@@ -269,8 +360,13 @@ async def get_user_sessions(user_id: str, db: Session = Depends(get_db)):
             Message.user_message != ""
         ).order_by(Message.timestamp).first()
 
-        # 默认标题（如果没有用户输入，则显示 session_id 前 6 位）
-        session_title = first_message.user_message[:10] if first_message else f"新对话"
+        # 标题优先级：自定义 title > 首条消息 > 默认
+        if session.title:
+            session_title = session.title
+        elif first_message:
+            session_title = first_message.user_message[:10]
+        else:
+            session_title = "新对话"
 
         # 获取该会话最后的消息时间（用于排序）
         last_message_time = db.query(func.max(Message.timestamp)).filter(Message.session_id == session.session_id).scalar()
@@ -278,6 +374,7 @@ async def get_user_sessions(user_id: str, db: Session = Depends(get_db)):
         session_list.append({
             "session_id": session.session_id,
             "title": session_title,
+            "folder_id": session.folder_id,
             "last_message_time": last_message_time or datetime.utcnow()
         })
 
@@ -285,6 +382,124 @@ async def get_user_sessions(user_id: str, db: Session = Depends(get_db)):
     session_list = sorted(session_list, key=lambda x: x["last_message_time"], reverse=True)
 
     return session_list
+
+
+# ── 会话单条增删改 ────────────────────────────────────────────────
+@app.delete("/delete_session/")
+async def delete_session(session_id: str, db: Session = Depends(get_db)):
+    """删除单个会话及其所有消息。"""
+    db.query(Message).filter(Message.session_id == session_id).delete(synchronize_session=False)
+    deleted = db.query(ChatSession).filter(ChatSession.session_id == session_id).delete(synchronize_session=False)
+    db.commit()
+    if deleted == 0:
+        raise HTTPException(status_code=404, detail="session 不存在")
+    return {"status": "ok", "deleted": session_id}
+
+
+@app.put("/rename_session/")
+async def rename_session(session_id: str, new_title: str, db: Session = Depends(get_db)):
+    """给会话设一个自定义 title。"""
+    session = db.query(ChatSession).filter(ChatSession.session_id == session_id).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="session 不存在")
+    session.title = (new_title or "").strip()[:100] or None
+    db.commit()
+    return {"status": "ok", "session_id": session_id, "title": session.title}
+
+
+# ── 批量操作 ──────────────────────────────────────────────────────
+class SessionIdsBody(BaseModel):
+    session_ids: List[str]
+
+
+class MoveSessionsBody(BaseModel):
+    session_ids: List[str]
+    folder_id: Optional[int] = None  # null = 移回根目录
+
+
+@app.post("/sessions/batch_delete")
+async def batch_delete_sessions(body: SessionIdsBody, db: Session = Depends(get_db)):
+    """一次性删除多个会话（含消息）。"""
+    if not body.session_ids:
+        return {"status": "ok", "deleted": 0}
+    db.query(Message).filter(Message.session_id.in_(body.session_ids)).delete(synchronize_session=False)
+    deleted = db.query(ChatSession).filter(ChatSession.session_id.in_(body.session_ids)).delete(synchronize_session=False)
+    db.commit()
+    return {"status": "ok", "deleted": deleted}
+
+
+@app.post("/sessions/move")
+async def move_sessions(body: MoveSessionsBody, db: Session = Depends(get_db)):
+    """把多个会话移到某文件夹（folder_id=None 表示移出文件夹）。"""
+    if not body.session_ids:
+        return {"status": "ok", "moved": 0}
+    if body.folder_id is not None:
+        folder = db.query(ChatFolder).filter(ChatFolder.id == body.folder_id).first()
+        if not folder:
+            raise HTTPException(status_code=404, detail="folder 不存在")
+    updated = db.query(ChatSession).filter(ChatSession.session_id.in_(body.session_ids)).update(
+        {ChatSession.folder_id: body.folder_id}, synchronize_session=False
+    )
+    db.commit()
+    return {"status": "ok", "moved": updated, "folder_id": body.folder_id}
+
+
+# ── 文件夹 CRUD ───────────────────────────────────────────────────
+class FolderCreateBody(BaseModel):
+    user_id: str
+    name: str
+
+
+class FolderRenameBody(BaseModel):
+    new_name: str
+
+
+@app.get("/folders/")
+async def list_folders(user_id: str, db: Session = Depends(get_db)):
+    """列出用户所有文件夹（按创建时间升序）。"""
+    rows = db.query(ChatFolder).filter(ChatFolder.user_id == user_id).order_by(ChatFolder.created_at.asc()).all()
+    return [{"id": f.id, "name": f.name} for f in rows]
+
+
+@app.post("/folders/")
+async def create_folder(body: FolderCreateBody, db: Session = Depends(get_db)):
+    """新建一个文件夹。"""
+    name = (body.name or "").strip()[:50]
+    if not name:
+        raise HTTPException(status_code=400, detail="文件夹名不能为空")
+    folder = ChatFolder(user_id=body.user_id, name=name)
+    db.add(folder)
+    db.commit()
+    db.refresh(folder)
+    return {"id": folder.id, "name": folder.name}
+
+
+@app.put("/folders/{folder_id}")
+async def rename_folder(folder_id: int, body: FolderRenameBody, db: Session = Depends(get_db)):
+    """重命名文件夹。"""
+    folder = db.query(ChatFolder).filter(ChatFolder.id == folder_id).first()
+    if not folder:
+        raise HTTPException(status_code=404, detail="folder 不存在")
+    new_name = (body.new_name or "").strip()[:50]
+    if not new_name:
+        raise HTTPException(status_code=400, detail="文件夹名不能为空")
+    folder.name = new_name
+    db.commit()
+    return {"id": folder.id, "name": folder.name}
+
+
+@app.delete("/folders/{folder_id}")
+async def delete_folder(folder_id: int, db: Session = Depends(get_db)):
+    """删除文件夹本身，里面的会话回到根目录（不删除会话）。"""
+    folder = db.query(ChatFolder).filter(ChatFolder.id == folder_id).first()
+    if not folder:
+        raise HTTPException(status_code=404, detail="folder 不存在")
+    db.query(ChatSession).filter(ChatSession.folder_id == folder_id).update(
+        {ChatSession.folder_id: None}, synchronize_session=False
+    )
+    db.delete(folder)
+    db.commit()
+    return {"status": "ok", "deleted_folder_id": folder_id}
 
 
 # 4️⃣ **查询某个会话的所有聊天记录**

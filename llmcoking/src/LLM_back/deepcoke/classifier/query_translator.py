@@ -455,40 +455,66 @@ _TRANSLATE_PROMPT = """You are a bilingual assistant for a coal coking domain Q&
 The user question may have key Chinese terms already pre-translated to standard
 English (e.g. "tamping coke", "CRI", "vitrinite"). Keep those English terms verbatim.
 
+If conversation history is provided, FIRST resolve coreferences (它/这/那/这个/那种 etc.)
+and ellipsis using the history. Replace pronouns with concrete entities.
+Examples:
+  - history: "user: 焦炭 CSR 是怎么测的"
+    current: "它和挥发分什么关系"
+    → resolved: "焦炭 CSR 和挥发分的关系"
+  - history: "user: 介绍一下 Zofiówka 煤"
+    current: "那种煤有什么特点"
+    → resolved: "Zofiówka 煤的特点"
+  - history: "user: 煤的镜质组反射率怎么算"
+    current: "标准是多少"
+    → resolved: "镜质组反射率的标准范围"
+
 Your job:
-1. Generate **2-3 diverse** English search queries optimized for retrieving relevant academic papers.
-   Each query should approach the topic from a slightly different angle (e.g. one general, one
-   process-focused, one mechanism/property-focused).
-2. Extract key domain concepts/entities for knowledge graph lookup.
+1. **Resolve coreferences** using conversation history (if any).
+2. **Normalize question form** to standardized academic search phrasing:
+   - "怎么测/如何测定" → "measurement method / standard test procedure"
+   - "有什么影响/有哪些影响" → "effects of X on Y / influence of"
+   - "是什么/什么是" → "definition / concept of"
+   - "为什么" → "mechanism / cause / reason"
+   - 把口语化问题转成论文标题/章节风格的查询
+3. Generate **2-3 diverse** English search queries from different angles
+   (one general, one process/mechanism-focused, one property/measurement-focused).
+4. Extract key domain concepts/entities for knowledge graph lookup.
 
 Return a JSON object:
 {
   "english_queries": ["query1", "query2", "query3"],
   "key_concepts": ["CSR", "coal fluidity", "vitrinite"],
   "key_methods": ["FTIR", "TG-MS"],
-  "key_materials": ["coking coal", "semi-coke"]
+  "key_materials": ["coking coal", "semi-coke"],
+  "resolved_question": "the question after resolving pronouns (in Chinese, for logging)"
 }
 
 Rules:
 - ALWAYS return at least 2 english_queries with different phrasings.
-- Use standard academic terminology and common abbreviations (CSR, CRI, FTIR, TGA, etc.).
+- Use standard academic terminology and abbreviations (CSR, CRI, FTIR, TGA, etc.).
 - If the input is already in English, still generate optimized queries.
 - Return ONLY the JSON object, no markdown fences, no explanation."""
 
 
-def translate_query(question: str) -> dict:
+def translate_query(question: str, history: list[dict] | None = None) -> dict:
     """
     Translate a Chinese question into English search queries and extract key concepts.
 
+    Args:
+        question: 当前用户问题
+        history: 多轮对话历史,格式 [{"user_message": "...", "bot_response": "..."}],
+                按时间顺序(老的在前)。最多取最近 3 轮塞进 LLM context。
+
     Returns:
         {
-            "english_queries": [q1, q2, q3],  # 至少 1 个,通常 2-3 个
+            "english_queries": [q1, q2, q3],
             "key_concepts": [...],
             "key_methods": [...],
-            "key_materials": [...]
+            "key_materials": [...],
+            "resolved_question": "...(用 history 补全代词后的问题)"
         }
     """
-    # 1) 术语预替换 — 这是兜底候选,即便 LLM 翻车也保留正确术语
+    # 1) 术语预替换 — 兜底候选,即便 LLM 翻车也保留正确术语
     pre_q = _preprocess_cn_terms(question)
 
     fallback = {
@@ -496,14 +522,24 @@ def translate_query(question: str) -> dict:
         "key_concepts": [],
         "key_methods": [],
         "key_materials": [],
+        "resolved_question": question,
     }
 
+    # 2) 拼装 LLM messages: system_prompt + (最近 3 轮 history) + 当前问题
+    messages = [{"role": "system", "content": _TRANSLATE_PROMPT}]
+    if history:
+        # 最近 3 轮,bot_response 截断到 500 字防 prompt 爆
+        for h in history[-3:]:
+            user_msg = (h.get("user_message") or "").strip()
+            bot_msg = (h.get("bot_response") or "").strip()[:500]
+            if user_msg:
+                messages.append({"role": "user", "content": user_msg})
+            if bot_msg:
+                messages.append({"role": "assistant", "content": bot_msg})
+    messages.append({"role": "user", "content": pre_q})
+
     try:
-        raw = chat_json(
-            [{"role": "system", "content": _TRANSLATE_PROMPT},
-             {"role": "user", "content": pre_q}],
-            temperature=0.3,  # 略高鼓励 paraphrase 多样性
-        )
+        raw = chat_json(messages, temperature=0.3)
         raw = re.sub(r"^```(?:json)?\s*", "", raw)
         raw = re.sub(r"\s*```$", "", raw)
         data = json.loads(raw)
@@ -534,4 +570,5 @@ def translate_query(question: str) -> dict:
         "key_concepts": data.get("key_concepts") or [],
         "key_methods": data.get("key_methods") or [],
         "key_materials": data.get("key_materials") or [],
+        "resolved_question": data.get("resolved_question") or question,
     }

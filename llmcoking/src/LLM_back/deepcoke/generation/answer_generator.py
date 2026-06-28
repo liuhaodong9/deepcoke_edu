@@ -85,7 +85,7 @@ def build_answer_prompt(
 ) -> list[dict]:
     """Build the prompt messages for answer generation."""
     system_prompt = (
-        "你是焦化大语言智能问答与分析系统DeepCoke，由苏州龙泰氢一能源科技有限公司研发。"
+        "你是高校智慧化工软件平台 DeepResearch，由苏州龙泰氢一能源科技有限公司研发。"
         "请基于提供的文献证据回答用户问题。\n\n"
         "【证据结构】\n"
         "  你看到的「相关文献证据」按 [N] 分篇，每篇内部按 [#M] 分段：\n"
