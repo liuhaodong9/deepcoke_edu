@@ -616,6 +616,42 @@ async def get_paper_pdf(paper_id: int):
     )
 
 
+@app.get("/papers/{paper_id}/figure")
+async def get_paper_figure(paper_id: int, page: int = 0, bbox: str = ""):
+    """渲染某篇 PDF 指定页的图(按图注 bbox 裁图注上方一条带),返回 PNG。
+    给回答里的"关键图片"展示用,鉴权豁免(<img> 带不了 header,同 /pdf)。"""
+    import sqlite3
+    from pathlib import Path
+    from starlette.responses import Response
+    from fastapi import HTTPException
+    from deepcoke import config as _c
+    from deepcoke.ingestion.figure_render import render_figure_crop, render_page_png
+
+    db = sqlite3.connect(str(_c.DATA_DIR / "papers.db"))
+    row = db.execute("SELECT file_path FROM papers WHERE id = ?", (paper_id,)).fetchone()
+    db.close()
+    if not row:
+        raise HTTPException(status_code=404, detail=f"paper_id={paper_id} 不存在")
+    file_path = (row[0] or "").replace("/", "\\")
+    if not file_path or not Path(file_path).exists():
+        raise HTTPException(status_code=404, detail=f"PDF 文件不存在: {file_path}")
+
+    cb = None
+    if bbox:
+        try:
+            parts = [float(x) for x in bbox.replace("[", "").replace("]", "").split(",") if x.strip()]
+            cb = tuple(parts) if len(parts) == 4 else None
+        except ValueError:
+            cb = None
+    png = render_figure_crop(file_path, int(page), cb) if cb else None
+    if png is None:
+        png = render_page_png(file_path, int(page))   # 无 bbox/裁图失败 → 退整页
+    if png is None:
+        raise HTTPException(status_code=500, detail="图渲染失败")
+    return Response(content=png, media_type="image/png",
+                    headers={"Cache-Control": "public, max-age=86400"})
+
+
 @app.get("/papers/{paper_id}")
 async def get_paper_meta(paper_id: int):
     """返回单篇文献的完整 metadata。"""

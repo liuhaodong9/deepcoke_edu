@@ -59,6 +59,24 @@
                 :id="'litqa-graph-' + message.id"
                 :ref="'litqaGraph_' + message.id"
               ></div>
+              <!-- C⑨': 关键图表(从引用论文里按 query 选,点击跳 PDF 那页) -->
+              <div
+                v-if="message.litqa.figures && message.litqa.figures.length"
+                class="litqa-figures"
+              >
+                <div class="litqa-figures-title">📈 相关图表 · 点击看原文</div>
+                <div class="litqa-figures-grid">
+                  <figure
+                    v-for="(fig, fidx) in message.litqa.figures"
+                    :key="fidx"
+                    class="litqa-fig"
+                    @click="openFigurePdf(message, fig)"
+                  >
+                    <img :src="figureUrl(fig)" :alt="fig.caption" loading="lazy" />
+                    <figcaption>[{{ fig.ref }}] {{ fig.caption }}</figcaption>
+                  </figure>
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -169,7 +187,7 @@
 <script>
 import { marked } from 'marked'
 import hljs from 'highlight.js'
-import { apiFetch, apiUrlWithToken } from '../api'
+import { apiFetch, apiUrl, apiUrlWithToken } from '../api'
 import 'highlight.js/styles/github-dark.css'
 import katex from 'katex'
 import 'katex/dist/katex.min.css'
@@ -241,9 +259,10 @@ export default {
         if (!message || !message.litqa) return
         const paper = (message.litqa.papers || []).find(p => p.paper_id === paperId)
         if (!paper) return
-        // 取该 paper 排序最高的 chunk(LITQA_META.chunks 已按 score 降序)
-        const topChunk = (message.litqa.chunks || []).find(c => c.paper_id === paperId)
-        this.openPdfPreview(paper, topChunk || null)
+        // 选支撑该 [N] 那句话的 chunk(中文 claim 里的数字+英文术语跨语言锚定;
+        // 无可锚定时退回该 paper score 最高的 chunk)
+        const chunk = this.pickSupportingChunk(message, paperId, a)
+        this.openPdfPreview(paper, chunk)
         return
       }
 
@@ -257,6 +276,43 @@ export default {
         const paper = { paper_id: paperId, title: q.dataset.title || '' }
         this.openPdfPreview(paper, { text: q.dataset.quote || '' })
       }
+    },
+    // ② 引用溯源:在该 paper 的 chunks 里挑最支撑"[N] 所在句子"的那段
+    // (答案中文、chunk 英文 → 用句中的数字 + 英文术语做跨语言锚点;命中不到退回 top-1)
+    pickSupportingChunk (message, paperId, anchorEl) {
+      const chunks = (message.litqa.chunks || []).filter(c => c.paper_id === paperId)
+      if (chunks.length <= 1) return chunks[0] || null
+      const tokens = this._anchorTokens(this._claimTextAround(anchorEl))
+      if (!tokens.length) return chunks[0] // 无数字/术语可锚 → 退回 top-1(已按 score 降序)
+      let best = chunks[0]
+      let bestHits = -1
+      for (const c of chunks) {
+        const text = (c.text || '').toLowerCase()
+        let hits = 0
+        for (const t of tokens) if (text.includes(t)) hits++
+        if (hits > bestHits) { bestHits = hits; best = c }
+      }
+      return bestHits > 0 ? best : chunks[0]
+    },
+    // 取锚点 [N] 前面那句话(回溯前驱文本节点到句末标点)
+    _claimTextAround (anchorEl) {
+      let text = ''
+      let node = anchorEl.previousSibling
+      let guard = 0
+      while (node && text.length < 220 && guard < 40) {
+        const t = node.textContent || ''
+        if (/[。！？!?；;\n]/.test(t)) { text = t.split(/[。！？!?；;\n]/).pop() + text; break }
+        text = t + text
+        node = node.previousSibling
+        guard++
+      }
+      return text
+    },
+    // 从中文 claim 抽跨语言锚点:数字(≥2 位)+ 英文/缩写术语(CSR/CRI/MPa…)
+    _anchorTokens (claim) {
+      const nums = claim.match(/\d+(?:\.\d+)?/g) || []
+      const latin = (claim.match(/[A-Za-z][A-Za-z0-9-]{1,}/g) || []).map(s => s.toLowerCase())
+      return Array.from(new Set([...nums, ...latin])).filter(t => t.length >= 2)
     },
     async openPdfPreview (paper, chunk = null) {
       this.previewPaper = paper
@@ -281,6 +337,16 @@ export default {
         if (!this.previewPdfError) this.previewPdfError = 'PDF 加载失败:' + e.message
         console.error('[pdf-preview] load failed:', e)
       }
+    },
+    // C⑨': 图片直链(鉴权豁免,不用 token)+ 点击跳 PDF 该页
+    figureUrl (fig) {
+      return apiUrl('/papers/' + fig.paper_id + '/figure?page=' + (fig.page || 0) +
+        '&bbox=' + encodeURIComponent(fig.bbox || ''))
+    },
+    openFigurePdf (message, fig) {
+      const paper = (message.litqa.papers || []).find(p => p.paper_id === fig.paper_id) ||
+        { paper_id: fig.paper_id, title: fig.caption || '' }
+      this.openPdfPreview(paper, { page: fig.page, text: fig.caption })
     },
     closePdfPreview () {
       this.previewPaper = null
@@ -988,6 +1054,51 @@ export default {
   border: 1px solid #e5edf5;
   border-radius: 6px;
   position: relative;
+  overflow: hidden;
+}
+/* C⑨': 相关图表 */
+.litqa-figures {
+  margin-top: 12px;
+}
+.litqa-figures-title {
+  font-weight: 600;
+  color: #2c5282;
+  font-size: 12.5px;
+  margin-bottom: 8px;
+}
+.litqa-figures-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 10px;
+}
+.litqa-fig {
+  margin: 0;
+  border: 1px solid #e1ecf4;
+  border-radius: 6px;
+  overflow: hidden;
+  background: #fff;
+  cursor: pointer;
+  transition: box-shadow 0.2s, transform 0.2s;
+}
+.litqa-fig:hover {
+  box-shadow: 0 4px 14px rgba(74, 144, 226, 0.25);
+  transform: translateY(-2px);
+}
+.litqa-fig img {
+  width: 100%;
+  height: 130px;
+  object-fit: contain;
+  background: #fafcff;
+  display: block;
+}
+.litqa-fig figcaption {
+  padding: 6px 8px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: #4a5568;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
   overflow: hidden;
 }
 .litqa-papers {

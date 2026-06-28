@@ -307,12 +307,16 @@ def node_fast_summary_retrieve(state: EnhancedPipelineState) -> dict:
         for c in sorted(packed_chunks, key=lambda x: -x["score"])
     ]
 
+    # C⑨': 关键图片(从引用论文的 figure chunk 按 query 选)
+    figures_meta = _select_key_figures(packed_papers, chunk_query)
+
     meta_payload = {
         "question": state["question"],
         "english_queries": eng_queries,
         "key_concepts": state.get("key_concepts", []),
         "papers": papers_meta,
         "chunks": chunks_meta,
+        "figures": figures_meta,
         "query_recalls": query_recalls,
         "mode": "summary_filter_fulltext",
         "candidates_count": len(candidate_paper_ids),
@@ -380,6 +384,49 @@ def _fallback_to_retrieve(state: EnhancedPipelineState, out, steps, reason: str)
         "agent_fallback": True,
         "output": out + old_result.get("output", []),
     }
+
+
+# ── C⑨': 关键图片选取(无 VLM,图文 caption 关联) ──────────────────────
+FIGURE_RERANK_MIN = 0.30   # 图 caption 与 query 的相关阈值,低于不展示
+FIGURE_TOP_N = 3
+
+
+def _select_key_figures(packed_papers: list, query: str) -> list:
+    """从引用论文的 figure chunk 里按 query(BGE rerank caption)选 top-N 关键图。
+    只从回答引用的论文里选 → 相关性有保证;纯图文关联,不调 VLM。"""
+    ref_by_pid = {p["paper_id"]: p.get("ref_num") for p in packed_papers}
+    cands = []
+    try:
+        from .vectorstore.chromadb_store import get_collection
+        coll = get_collection()
+        for pid in ref_by_pid:
+            raw = coll.get(where={"paper_id": pid}, include=["documents", "metadatas"])
+            for doc, m in zip(raw.get("documents") or [], raw.get("metadatas") or []):
+                if m.get("block_type") != "figure":
+                    continue
+                cap = (doc or "").split("[图像描述]")[0].strip()
+                if cap:
+                    cands.append({
+                        "paper_id": pid, "ref": ref_by_pid[pid], "caption": cap[:300],
+                        "page": m.get("page_start", 0), "bbox": m.get("bbox", ""),
+                        "figure_no": m.get("figure_no", ""),
+                    })
+    except Exception as e:
+        logger.warning(f"[fast_summary] 取 figure chunk 失败: {e}")
+        return []
+    if not cands:
+        return []
+    try:
+        ranked = bge_rerank(query, [(i, c["caption"]) for i, c in enumerate(cands)])
+    except Exception as e:
+        logger.warning(f"[fast_summary] figure rerank 失败: {e}")
+        return []
+    out = []
+    for i, s in ranked[:FIGURE_TOP_N]:
+        if float(s) >= FIGURE_RERANK_MIN:
+            c = dict(cands[i]); c["score"] = round(float(s), 3)
+            out.append(c)
+    return out
 
 
 # ══════════════════════════════════════════════════════════════════

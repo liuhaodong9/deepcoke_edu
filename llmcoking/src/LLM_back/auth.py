@@ -153,6 +153,9 @@ def _is_public_path(path: str) -> bool:
     # 这里仍允许无 header 访问，依靠 query token；公网生产再收紧
     if path.startswith("/papers/") and path.endswith("/pdf"):
         return True
+    # 图片直链：/papers/{id}/figure 给 <img> 用，带不了 header，同 PDF 豁免
+    if path.startswith("/papers/") and path.endswith("/figure"):
+        return True
     return False
 
 
