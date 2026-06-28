@@ -537,15 +537,16 @@ def hybrid_search(query: str, paper_id: int = None, top_k: int = 8,
     """
     where = {"paper_id": int(paper_id)} if paper_id else None
     dense = retrieve(query, top_k=max(int(top_k) * 3, 20), where=where)
-    pids = [int(paper_id)] if paper_id else list({c.paper_id for c in dense if c.paper_id})
 
     bm = []
-    if pids:
-        try:
-            from .literature_qa.service import _bm25_recall
-            bm = _bm25_recall(query, pids, bm25_pool)   # [(chunk_id, doc, meta, score)]
-        except Exception as e:
-            logger.warning(f"[hybrid] BM25 不可用,退化纯语义: {e}")
+    try:
+        from .literature_qa import service as _svc
+        if paper_id:
+            bm = _svc._bm25_recall(query, [int(paper_id)], bm25_pool)        # 限定单篇
+        else:
+            bm = _svc._bm25_recall_global(query, bm25_pool)                  # 全库:精确码也能捞出自己那篇
+    except Exception as e:
+        logger.warning(f"[hybrid] BM25 不可用,退化纯语义: {e}")
     if not bm:
         return dense[:int(top_k)]
 

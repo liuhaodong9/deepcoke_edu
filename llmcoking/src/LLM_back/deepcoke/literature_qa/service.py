@@ -139,6 +139,29 @@ def _bm25_recall(question: str, paper_ids: list[int], pool: int) -> list[tuple[s
         out.append((state["chunk_ids"][p], state["documents"][p], state["metadatas"][p], score))
     return out
 
+
+def _bm25_recall_global(question: str, pool: int) -> list[tuple[str, str, dict, float]]:
+    """全库 BM25 召回(不限 paper),返回 top-pool。
+
+    让精确短码/标签(LR2 / Pert3 Powder / 牌号)即使语义没召回到该篇,也能靠词面命中把自己捞出来。
+    """
+    from .build_bm25 import tokenize
+    state = _load_bm25()
+    if state is None:
+        return []
+    q_tokens = tokenize(question)
+    if not q_tokens:
+        return []
+    all_scores = state["bm25"].get_scores(q_tokens)
+    positions = sorted(range(len(all_scores)), key=lambda p: -float(all_scores[p]))[:pool]
+    out = []
+    for p in positions:
+        score = float(all_scores[p])
+        if score <= 0:
+            continue
+        out.append((state["chunk_ids"][p], state["documents"][p], state["metadatas"][p], score))
+    return out
+
 # 中文术语规范 — 内嵌到所有 LLM 答题 prompt,约束 LLM 把英文 chunks 翻成中文时用学界惯用术语
 # 注意:这些是 LLM 易错对照,LLM 在没有提示时会按训练数据里见过最多的写法写,常跟焦化中文学界惯用相反
 _TERM_GUIDE = """
