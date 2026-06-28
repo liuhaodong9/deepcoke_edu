@@ -689,9 +689,17 @@ export default {
         }
         // 兜底删除 [#M] 段落级标记(LLM 不应输出,后端 stream 已清洗,前端再保一道)
         html = html.replace(/\s*\[#\d+\]/g, '')
-        // [N] paper 级引用 → litqa-cite 链接(点击触发自动选 top chunk 高光)
+        // 字典引用映射(续 RAG 编号的 [6][7][8]…),点击用 quote 在 PDF 文本高亮
+        const dictRefs = message.litqaDictRefs || {}
+        // [N] 引用 → 链接:字典 ref 走 quant-cite(quote 高亮),RAG ref 走 litqa-cite(top chunk)
         html = html.replace(/\[(\d+)\](?!\()/g, (m, n) => {
           const ref = parseInt(n)
+          const dr = dictRefs[ref]
+          if (dr && dr.paper_id) {
+            const q = (dr.quote || '').replace(/"/g, '&quot;')
+            const t = (dr.title || '').replace(/"/g, '&quot;')
+            return `<a class="quant-cite" data-paper-id="${dr.paper_id}" data-quote="${q}" data-title="${t}" href="#">[${ref}]</a>`
+          }
           const pid = refToPid[ref] || ''
           if (!pid) return m
           const preview = refToPreview[ref] || ''
@@ -820,6 +828,7 @@ export default {
         let botReply = ''
         let progressBlock = ''
         const LITQA_META_RE = /<!--LITQA_META:([\s\S]*?)-->\s*/
+        const LITQA_DICT_RE = /<!--LITQA_DICT_REFS:([\s\S]*?)-->\s*/
 
         while (true) {
           const { value, done } = await reader.read()
@@ -843,6 +852,18 @@ export default {
                   console.warn('parse LITQA_META failed', e)
                 }
                 botReply = botReply.replace(LITQA_META_RE, '')
+              }
+            }
+            // 截获字典引用映射(续 RAG 编号的 [N] → quant-cite 溯源)
+            if (!botMessage.litqaDictRefs) {
+              const md = botReply.match(LITQA_DICT_RE)
+              if (md) {
+                try {
+                  this.$set(botMessage, 'litqaDictRefs', JSON.parse(md[1]))
+                } catch (e) {
+                  console.warn('parse LITQA_DICT_REFS failed', e)
+                }
+                botReply = botReply.replace(LITQA_DICT_RE, '')
               }
             }
             botMessage.text = progressBlock + botReply

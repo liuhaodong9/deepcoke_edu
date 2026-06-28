@@ -364,7 +364,8 @@ def lookup_structured(question: str) -> dict:
           "error": str,          # 失败时的错误信息（命中或正常未命中时为 ""）
         }
     任何环节失败都返回 hit=False，调用方静默回退到 RAG。"""
-    out = {"hit": False, "markdown": "", "sql": None, "intent": "", "rows": [], "error": ""}
+    out = {"hit": False, "markdown": "", "sql": None, "intent": "", "rows": [], "error": "",
+           "dict_papers": []}
 
     sql, intent = translate_to_sql(question)
     out["intent"] = intent
@@ -388,6 +389,17 @@ def lookup_structured(question: str) -> dict:
     out["rows"] = rows
     out["markdown"] = format_as_markdown(rows, question, sql)
     out["hit"] = True
+    # 抽不重复的字典论文(供正文 [N] 引用溯源:paper_id + 一条 evidence_quote 做高亮)
+    seen = set()
+    for r in rows:
+        pid = r.get("_trace_paper_id")
+        if pid and pid not in seen:
+            seen.add(pid)
+            out["dict_papers"].append({
+                "paper_id": pid,
+                "title": r.get("title") or f"paper {pid}",
+                "quote": (r.get("_trace_quote") or "").strip(),
+            })
     return out
 
 

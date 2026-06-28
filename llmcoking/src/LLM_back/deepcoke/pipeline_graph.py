@@ -597,18 +597,31 @@ def node_structured_lookup(state: PipelineState) -> dict:
 
     structured_evidence = ""
     hit_rows = 0
+    dict_refs = []   # [{ref, paper_id, title, quote}] 字典论文登记为正式引用,续 RAG 编号
     try:
         result = lookup_structured(state["question"])
         if result.get("hit"):
             structured_evidence = result.get("markdown", "") or ""
             hit_rows = len(result.get("rows") or [])
-        # debug 日志
+            # 字典命中的不重复论文 → 接着 RAG 的 [1..N] 续号 [N+1..],供正文 [N] 点击溯源
+            rag_n = len(state.get("agent_papers_meta") or [])
+            for i, dp in enumerate(result.get("dict_papers") or []):
+                if dp.get("paper_id") and dp.get("quote"):
+                    dict_refs.append({
+                        "ref": rag_n + 1 + i, "paper_id": dp["paper_id"],
+                        "title": dp.get("title") or "", "quote": dp["quote"],
+                    })
         logger.info(
             f"[structured_lookup] hit={result.get('hit')} rows={hit_rows} "
-            f"sql={(result.get('sql') or '')[:120]} err={result.get('error', '')}"
+            f"dict_refs={len(dict_refs)} sql={(result.get('sql') or '')[:100]} err={result.get('error', '')}"
         )
     except Exception as e:
         logger.warning(f"[structured_lookup] non-fatal: {e}")
+
+    # 给 LLM 一份编号的字典来源,引导它引用字典数值时用这些 [N](而非乱编)
+    if structured_evidence and dict_refs:
+        src = " · ".join(f"[{d['ref']}] {d['title']}" for d in dict_refs)
+        structured_evidence = structured_evidence + f"\n\n字典数据来源(引用字典数值时用对应编号): {src}"
 
     if structured_evidence:
         steps[0]['text'] = f"结构化字典：命中 {hit_rows} 条记录"
@@ -617,6 +630,12 @@ def node_structured_lookup(state: PipelineState) -> dict:
     steps[0]['done'] = True
     steps[0]['pct'] = 65
     out.append(_progress_html(steps))
+
+    # 字典引用映射给前端:正文 [N](N≥RAG数+1)渲染成 quant-cite,用 quote 在 PDF 高亮
+    if dict_refs:
+        refs_map = {d["ref"]: {"paper_id": d["paper_id"], "quote": d["quote"], "title": d["title"]}
+                    for d in dict_refs}
+        out.append(f"<!--LITQA_DICT_REFS:{_json.dumps(refs_map, ensure_ascii=False)}-->\n")
 
     return {"structured_evidence": structured_evidence, "output": out}
 
