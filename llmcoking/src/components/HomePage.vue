@@ -199,6 +199,9 @@
                     </svg>
                 </button>
                 <div class="top-bar-right">
+                    <button class="theme-toggle-btn" @click="toggleTheme" :title="theme === 'dark' ? '切到白天' : '切到夜间'">
+                        {{ theme === 'dark' ? '☀️' : '🌙' }}
+                    </button>
                     <button class="voice-top-btn" @click="goVoiceChat">
                         <svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor">
                             <path d="M12 14a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v5a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2z"/>
@@ -219,6 +222,7 @@ export default {
   data () {
     return {
       isCollapese: false,
+      theme: 'dark', // 科研写作页明暗主题(默认晚上)
       chatSessions: [],
       folders: [],
       expandedFolderIds: [],
@@ -248,6 +252,15 @@ export default {
     },
     goLanding () {
       this.$router.push('/landing')
+    },
+    // 明暗主题:设 document data-theme(HomePage/MainDia 的 [data-theme] 覆盖据此生效)+ 记忆
+    applyTheme (t) {
+      this.theme = t
+      document.documentElement.setAttribute('data-theme', t)
+      try { localStorage.setItem('drTheme', t) } catch (e) {}
+    },
+    toggleTheme () {
+      this.applyTheme(this.theme === 'dark' ? 'light' : 'dark')
     },
     async startNewChat () {
       try {
@@ -498,6 +511,7 @@ export default {
     }
   },
   mounted () {
+    this.applyTheme(localStorage.getItem('drTheme') || 'dark')
     this.fetchChatSessions()
     this.fetchFolders()
   }
@@ -963,6 +977,88 @@ export default {
 
 .voice-top-btn svg {
   opacity: 0.6;
+}
+
+/* ===== 明暗切换按钮 ===== */
+.theme-toggle-btn {
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  padding: 4px 10px;
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+.theme-toggle-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+/* ===== 白天(light)主题覆盖:深色外壳/侧边栏 → 浅色 ===== */
+[data-theme="light"] .el-aside {
+  background: #f0f2f5;
+}
+[data-theme="light"] .el-main {
+  background: #f5f8fc;
+}
+[data-theme="light"] .top-bar {
+  background: rgba(0, 0, 0, 0.02);
+  color: #5a6878;
+}
+[data-theme="light"] .sidebar-bottom {
+  border-top-color: rgba(0, 0, 0, 0.08);
+}
+[data-theme="light"] .logo,
+[data-theme="light"] .new-chat-btn,
+[data-theme="light"] .multi-btn,
+[data-theme="light"] .sidebar-bottom-btn,
+[data-theme="light"] .voice-top-btn,
+[data-theme="light"] .folder-name,
+[data-theme="light"] .chat-item.active .chat-title {
+  color: #1a202c;
+}
+[data-theme="light"] .chat-title,
+[data-theme="light"] .folder-header,
+[data-theme="light"] .multi-action-count {
+  color: #5a6878;
+}
+[data-theme="light"] .history-label,
+[data-theme="light"] .icon-btn,
+[data-theme="light"] .chat-item-icon,
+[data-theme="light"] .chat-menu-btn,
+[data-theme="light"] .folder-count,
+[data-theme="light"] .folder-caret,
+[data-theme="light"] .root-divider {
+  color: #94a3b8;
+}
+[data-theme="light"] .new-chat-btn,
+[data-theme="light"] .multi-btn,
+[data-theme="light"] .sidebar-bottom-btn,
+[data-theme="light"] .voice-top-btn,
+[data-theme="light"] .theme-toggle-btn {
+  background: #ffffff;
+  border-color: #d9e2ec;
+}
+[data-theme="light"] .icon-btn:hover,
+[data-theme="light"] .new-chat-btn:hover,
+[data-theme="light"] .multi-btn:hover:not(:disabled),
+[data-theme="light"] .history-action-btn:hover,
+[data-theme="light"] .folder-header:hover,
+[data-theme="light"] .chat-item:hover,
+[data-theme="light"] .chat-menu-btn:hover,
+[data-theme="light"] .sidebar-bottom-btn:hover,
+[data-theme="light"] .voice-top-btn:hover,
+[data-theme="light"] .theme-toggle-btn:hover {
+  background: rgba(0, 0, 0, 0.05);
+}
+[data-theme="light"] .icon-btn:hover,
+[data-theme="light"] .new-chat-btn:hover,
+[data-theme="light"] .multi-btn:hover:not(:disabled) {
+  color: #1a202c;
+  border-color: #c2d0de;
+}
+[data-theme="light"] .chat-item.active {
+  background: rgba(20, 158, 250, 0.10);
+  border-color: rgba(20, 158, 250, 0.25);
 }
 
 </style>

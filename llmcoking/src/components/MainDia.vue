@@ -1807,4 +1807,33 @@ export default {
   color: #444;
   padding-top: 8px;
 }
+
+/* ===== 白天(light)主题覆盖:深色对话区 → 浅色(litqa面板/gen-stats 本就是浅卡,两套都保留) ===== */
+[data-theme="light"] .chat-wrapper {
+  background: #f5f8fc;
+}
+[data-theme="light"] .welcome-title {
+  color: #1a202c;
+}
+[data-theme="light"] .message-row.bot .message-bubble {
+  color: #1a202c;
+}
+[data-theme="light"] .message-row.user .message-bubble {
+  background: #d6e9ff;
+  color: #143a5c;
+  border-color: rgba(20, 158, 250, 0.25);
+}
+[data-theme="light"] .input-wrapper {
+  background: #ffffff;
+  border-color: #d9e2ec;
+}
+[data-theme="light"] .input-box {
+  color: #1a202c;
+}
+[data-theme="light"] .input-box::placeholder {
+  color: #94a3b8;
+}
+[data-theme="light"] .input-footer {
+  color: #94a3b8;
+}
 </style>
