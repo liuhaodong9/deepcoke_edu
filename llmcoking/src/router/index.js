@@ -5,6 +5,7 @@ import LandingPage from '@/components/LandingPage.vue'
 import HomePage from '@/components/HomePage.vue'
 import MainDia from '@/components/MainDia.vue'
 import VoiceAgent from '@/components/VoiceAgent.vue'
+import AdminPapers from '@/components/AdminPapers.vue'
 // 导入全局样式表
 import '../assets/css/global.css'
 
@@ -32,6 +33,11 @@ const router = new VueRouter({
           path: 'VoiceAgent',
           name: 'VoiceAgent',
           component: VoiceAgent
+        },
+        {
+          path: 'AdminPapers',
+          name: 'AdminPapers',
+          component: AdminPapers
         }
       ]
     }

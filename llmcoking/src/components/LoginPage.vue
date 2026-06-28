@@ -3,8 +3,8 @@
     <div class="login_box">
       <!-- 标题 -->
       <div class="title-area">
-        <h1 class="brand-title">DeepCoke</h1>
-        <p class="brand-subtitle">焦化大语言智能问答与分析系统 V1.0</p>
+        <h1 class="brand-title">DeepResearch</h1>
+        <p class="brand-subtitle">高校智慧化工软件平台</p>
       </div>
 
       <!-- 登录/注册 Tab 切换 -->
@@ -93,6 +93,8 @@
 </template>
 
 <script>
+import { setToken, clearAuth } from '../api'
+
 export default {
   data () {
     const validateConfirmPassword = (rule, value, callback) => {
@@ -109,7 +111,7 @@ export default {
       agreeToTermsReg: false,
       loginLoading: false,
       registerLoading: false,
-      apiBaseUrl: 'http://127.0.0.1:8000',
+      // baseURL 走相对路径，由 main.js 里的 axios 和 src/api.js 统一管理
 
       // 登录表单
       loginForm: { username: '', password: '' },
@@ -156,14 +158,16 @@ export default {
 
         this.loginLoading = true
         try {
-          const res = await this.$http.post(`${this.apiBaseUrl}/login`, this.loginForm)
+          // 登录之前先清掉旧 token 防止意外携带（axios interceptor 会自动加 Bearer header）
+          clearAuth()
+          const res = await this.$http.post('/login', this.loginForm)
           if (res.status !== 200 || res.data === 'fail') {
             this.$message.error('用户名或密码错误！')
             return
           }
 
           this.$message.success('登录成功！')
-          window.sessionStorage.setItem('token', res.data.token)
+          setToken(res.data.token)
           window.sessionStorage.setItem('username', res.data.username)
           window.sessionStorage.setItem('nickname', res.data.nickname || res.data.username)
 
@@ -185,7 +189,7 @@ export default {
 
         this.registerLoading = true
         try {
-          const res = await this.$http.post(`${this.apiBaseUrl}/register`, {
+          const res = await this.$http.post('/register', {
             username: this.registerForm.username,
             password: this.registerForm.password,
             nickname: this.registerForm.nickname
@@ -215,7 +219,7 @@ export default {
 
 <style lang="less" scoped>
 .login_container {
-  background-image: url('../assets/imgs/DeepCokeBackground_2.png');
+  background-image: url('../assets/imgs/DeepResearchBackground.png');
   background-repeat: no-repeat;
   height: 100%;
   background-size: 110% 100%;

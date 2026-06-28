@@ -6,7 +6,7 @@
         <!-- 欢迎区域（仅新会话且无消息时显示） -->
         <div v-if="messages.length <= 1 && sessionId === 'new'" class="welcome-area">
           <div class="welcome-logo">
-            <img src="../assets/imgs/DeepCoke_logo.png" alt="DC" />
+            <img src="../assets/imgs/deepresearch_logo.png" alt="DR" />
           </div>
           <h2 class="welcome-title">有什么可以帮您？</h2>
           <div class="quick-actions">
@@ -30,7 +30,7 @@
         >
           <!-- bot 头像 -->
           <div v-if="message.type === 'bot'" class="avatar bot-avatar">
-            <img src="../assets/imgs/DeepCoke_logo.png" alt="DC" />
+            <img src="../assets/imgs/deepresearch_logo.png" alt="DR" />
           </div>
 
           <div class="message-bubble">
@@ -89,7 +89,7 @@
           v-model="newMessage"
           type="textarea"
           :autosize="{ minRows: 1, maxRows: 6 }"
-          placeholder="给 DeepCoke 发送消息..."
+          placeholder="给 DeepResearch 发送消息..."
           @keydown.enter.native.prevent="sendMessage"
           class="input-box"
         ></el-input>
@@ -834,7 +834,7 @@ export default {
     streamWelcomeMessage () {
       const botMessage = { text: '', type: 'bot' }
       this.messages.push(botMessage)
-      this.streamReply(botMessage, '您好！我是焦化大语言智能问答与分析系统DeepCoke，有什么可以帮助你的？')
+      this.streamReply(botMessage, '您好！我是高校智慧化工软件平台 DeepResearch，有什么可以帮助你的？')
     }
   },
   watch: {
@@ -856,7 +856,7 @@ export default {
     if (this.sessionId === 'new') {
       const botMessage = { text: '', type: 'bot', id: nextMsgId() }
       this.messages.push(botMessage)
-      this.streamReply(botMessage, '您好！我是焦化大语言智能问答与分析系统DeepCoke，有什么可以帮助你的？')
+      this.streamReply(botMessage, '您好！我是高校智慧化工软件平台 DeepResearch，有什么可以帮助你的？')
     } else {
       this.loadChatHistory()
     }

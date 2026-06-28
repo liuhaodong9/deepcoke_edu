@@ -14,7 +14,7 @@
               <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>
             </svg>
           </span>
-          DeepCoke
+          DeepResearch
         </div>
       </div>
       <div class="header-right">
@@ -34,79 +34,37 @@
     <main class="landing-main">
       <!-- Hero 区域 -->
       <section class="hero-section">
-        <div class="hero-badge">AI-Powered Coking Intelligence</div>
-        <h1 class="hero-title">Deep<span class="title-accent">Coke</span></h1>
-        <p class="hero-subtitle">智能焦化决策平台</p>
-        <p class="hero-desc">融合配煤优化、数字孪生、知识图谱与智能对话<br/>为焦化全流程提供 AI 驱动的决策支持</p>
-        <div class="hero-stats">
-          <div class="stat-item">
-            <span class="stat-value">8</span>
-            <span class="stat-label">预测模型</span>
-          </div>
-          <div class="stat-divider"></div>
-          <div class="stat-item">
-            <span class="stat-value">6017</span>
-            <span class="stat-label">知识文档</span>
-          </div>
-          <div class="stat-divider"></div>
-          <div class="stat-item">
-            <span class="stat-value">24/7</span>
-            <span class="stat-label">本地部署</span>
-          </div>
-        </div>
+        <div class="hero-badge">智慧化工AI 智能体</div>
+        <h1 class="hero-title">Deep<span class="title-accent">Research</span></h1>
+        <p class="hero-subtitle">高校智慧化工软件平台</p>
+        <p class="hero-desc">融合化工专业知识库、实验安全规则与数字孪生模拟软件，构建面向教学、实验管理和模拟仿真的一体化 AI 智能体。</p>
       </section>
 
-      <!-- 四大产品卡片 - Bento Grid -->
-      <section class="products-section">
-        <div
-          class="product-card"
-          v-for="product in products"
-          :key="product.id"
-          :class="'card-' + product.id"
-        >
-          <div class="card-header">
-            <div class="card-icon-wrapper" :style="{ background: product.gradient }">
-              <i :class="product.icon" class="card-icon"></i>
-            </div>
-            <span class="card-status">{{ product.status }}</span>
-          </div>
-          <h3 class="card-title">{{ product.title }}</h3>
-          <p class="card-desc">{{ product.desc }}</p>
-          <div class="card-tags">
-            <span class="tag" v-for="tag in product.tags" :key="tag">{{ tag }}</span>
-          </div>
-        </div>
-      </section>
-
-      <!-- CTA 按钮 -->
-      <section class="cta-section">
-        <button class="cta-button" @click="enterChat">
-          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
-          </svg>
-          开始智能对话
-        </button>
-        <p class="cta-hint">输入您的焦化问题，DeepCoke 将自动调用合适的工具为您解答</p>
-      </section>
-
-      <!-- 示例问题 -->
-      <section class="capabilities-section">
-        <h2 class="section-title">
-          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
-            <circle cx="12" cy="12" r="10"/>
-            <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/>
-            <line x1="12" y1="17" x2="12.01" y2="17"/>
-          </svg>
-          您可以这样问
-        </h2>
-        <div class="examples-grid">
-          <div class="example-item" v-for="(example, idx) in examples" :key="idx" @click="enterChatWithQuestion(example)">
-            <svg class="example-arrow" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
-              <line x1="5" y1="12" x2="19" y2="12"/>
-              <polyline points="12 5 19 12 12 19"/>
-            </svg>
-            <span>{{ example }}</span>
-          </div>
+      <!-- 两大支柱板块 -->
+      <section
+        class="section-block"
+        v-for="section in sections"
+        :key="section.id"
+      >
+        <div class="tiles" :class="section.grid">
+          <article
+            class="tile"
+            v-for="card in section.cards"
+            :key="card.id"
+            :class="['tile-' + card.id, { disabled: !card.ready }]"
+            :style="tileStyle(card)"
+            @click="onCardClick(card)"
+          >
+            <span class="tile-overlay"></span>
+            <i v-if="!card.image" :class="card.icon" class="tile-watermark"></i>
+            <span class="tile-status" :class="{ 'status-soon': !card.ready }">{{ card.status }}</span>
+            <header class="tile-body">
+              <span class="tile-tag">{{ card.tags[0] }}</span>
+              <h3 class="tile-title">{{ card.title }}</h3>
+              <p class="tile-desc">{{ card.desc }}</p>
+              <span class="tile-cta">{{ card.url ? '点击进入系统 →' : (card.ready ? '开始使用 →' : '敬请期待') }}</span>
+            </header>
+          </article>
         </div>
       </section>
     </main>
@@ -125,64 +83,79 @@ export default {
   data () {
     return {
       userName: window.sessionStorage.getItem('nickname') || window.sessionStorage.getItem('username') || 'user',
-      products: [
+      sections: [
         {
-          id: 'blend',
-          icon: 'el-icon-s-operation',
-          title: '智能配煤',
-          desc: '基于煤质指标与焦炭质量模型，AI 自动推算最优配煤方案，降低成本、稳定焦炭质量。',
-          gradient: 'linear-gradient(135deg, #1a3a5c 0%, #2a6496 100%)',
-          tags: ['配方优化', '成本控制', '质量预测'],
-          status: '已上线'
-        },
-        {
-          id: 'twin',
-          icon: 'el-icon-monitor',
-          title: '数字孪生',
-          desc: '基于 UE5 构建的焦炉三维温度场可视化系统，实时监控炼焦过程工况与温度分布。',
-          gradient: 'linear-gradient(135deg, #ff8a00 0%, #e06b10 100%)',
-          tags: ['三维可视化', '温度场', '实时监控'],
-          status: '开发中'
-        },
-        {
-          id: 'chat',
-          icon: 'el-icon-microphone',
-          title: '智能对话',
-          desc: '支持文字与语音交互，理解焦化领域专业问题，调用多种工具综合回答。',
-          gradient: 'linear-gradient(135deg, #149efa 0%, #0d6efd 100%)',
-          tags: ['语音识别', '多轮对话', '工具调度'],
-          status: '已上线'
-        },
-        {
-          id: 'knowledge',
-          icon: 'el-icon-notebook-2',
-          title: '知识图谱',
-          desc: '基于焦化文献构建的专业知识库，回答附带文献来源引用，确保可溯源。',
-          gradient: 'linear-gradient(135deg, #1a5c3a 0%, #28a06a 100%)',
-          tags: ['文献检索', '知识问答', '来源引用'],
-          status: '已上线'
+          id: 'all',
+          grid: 'tiles-uni',
+          cards: [
+            {
+              id: 'twin',
+              icon: 'el-icon-monitor',
+              title: '模拟仿真',
+              desc: '焦炉三维温度场与炼焦工艺过程的数字仿真，实时监控工况、温度场、煤床压力与焦化时间预测。',
+              gradient: 'linear-gradient(135deg, rgba(6,182,212,0.5) 0%, rgba(8,145,178,0.5) 100%)',
+              image: require('@/assets/imgs/DTbackground.jpg'),
+              tags: ['三维可视化', '温度场', '工艺仿真'],
+              status: '可用',
+              ready: true,
+              url: 'http://1.116.164.66/#/login'
+            },
+            {
+              id: 'research',
+              icon: 'el-icon-notebook-2',
+              title: '科研写作',
+              desc: '论文写作的可溯源、可引用、可信赖资料支持，回答附文献来源。',
+              gradient: 'linear-gradient(135deg, rgba(26,92,58,0.5) 0%, rgba(40,160,106,0.5) 100%)',
+              image: require('@/assets/imgs/writing.png'),
+              tags: ['文献检索', '溯源引用', '多篇整合'],
+              status: '可用',
+              ready: true
+            },
+            {
+              id: 'student',
+              icon: 'el-icon-reading',
+              title: '学科知识',
+              desc: '课本、课件、历年试题汇成系统化复习路径；掌握学生高频疑问、章节难点与学习进度。',
+              gradient: 'linear-gradient(135deg, rgba(20,158,250,0.5) 0%, rgba(13,110,253,0.5) 100%)',
+              image: require('@/assets/imgs/knowledge.png'),
+              tags: ['课程资料', '历年试题', '学情分析'],
+              status: '建设中',
+              ready: false
+            },
+            {
+              id: 'lab',
+              icon: 'el-icon-warning-outline',
+              title: '实验安全',
+              desc: '实验流程、安全规范、关键操作点实时提醒记录。',
+              gradient: 'linear-gradient(135deg, rgba(225,29,72,0.5) 0%, rgba(244,63,94,0.5) 100%)',
+              image: require('@/assets/imgs/lab.png'),
+              tags: ['实验流程', '安全规范', '操作提醒'],
+              status: '建设中',
+              ready: false
+            }
+          ]
         }
-      ],
-      examples: [
-        '这批煤灰分12%、挥发分28%，如何配煤？',
-        '焦炉温度场异常，可能的原因有哪些？',
-        '配煤中肥煤比例过高会怎样？',
-        '查看当前焦炉实时温度分布',
-        '关于捣固焦工艺的文献有哪些？',
-        '如何降低焦炭灰分同时保证强度？'
       ]
     }
   },
   methods: {
+    tileStyle (card) {
+      // 有封面图用图，没有则用渐变色块
+      return card.image
+        ? { backgroundImage: 'url(' + card.image + ')' }
+        : { backgroundImage: card.gradient }
+    },
+    onCardClick (card) {
+      if (!card.ready) {
+        if (this.$message) this.$message({ message: '该功能正在建设中，敬请期待 🚧', type: 'info' })
+        else window.alert('该功能正在建设中，敬请期待')
+        return
+      }
+      if (card.url) { window.open(card.url, '_blank'); return }
+      this.enterChat()
+    },
     enterChat () {
       this.$router.push({ name: 'MainDia', params: { sessionId: 'new' } })
-    },
-    enterChatWithQuestion (question) {
-      this.$router.push({
-        name: 'MainDia',
-        params: { sessionId: 'new' },
-        query: { q: question }
-      })
     },
     logout () {
       window.sessionStorage.removeItem('token')
@@ -204,21 +177,17 @@ export default {
 
 .landing-container {
   min-height: 100vh;
-  background: @bg-deep;
+  /* 最底层:深蓝色大背景,铺满整屏 */
+  background: linear-gradient(180deg, #16386b 0%, #0e2547 52%, #0a1a33 100%);
+  background-attachment: fixed;
   position: relative;
   overflow-x: hidden;
   color: @text-primary;
 }
 
-/* 网格背景 */
+/* 网格已移除 */
 .grid-bg {
-  position: fixed;
-  inset: 0;
-  background-image:
-    linear-gradient(rgba(255,255,255,0.02) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(255,255,255,0.02) 1px, transparent 1px);
-  background-size: 60px 60px;
-  z-index: 0;
+  display: none;
 }
 
 /* 光晕装饰 */
@@ -257,9 +226,7 @@ export default {
   justify-content: space-between;
   align-items: center;
   padding: 12px 24px;
-  background: rgba(5, 10, 20, 0.7);
-  backdrop-filter: blur(20px);
-  border: 1px solid @border-subtle;
+  background: transparent;
   border-radius: 14px;
 }
 
@@ -276,6 +243,7 @@ export default {
   display: flex;
   align-items: center;
   gap: 10px;
+  text-shadow: 0 2px 10px rgba(0, 0, 0, 0.8);
 }
 
 .logo-icon {
@@ -296,14 +264,15 @@ export default {
 }
 
 .user-name {
-  color: @text-secondary;
+  color: #fff;
   font-size: 13px;
+  text-shadow: 0 1px 6px rgba(0, 0, 0, 0.7);
 }
 
 .logout-btn {
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid @border-subtle;
-  color: @text-secondary;
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  color: #fff;
   font-size: 13px;
   border-radius: 8px;
   padding: 6px 14px;
@@ -324,15 +293,30 @@ export default {
 .landing-main {
   position: relative;
   z-index: 1;
-  max-width: 1060px;
-  margin: 0 auto;
-  padding: 110px 32px 40px;
+  width: 100%;
+  padding: 0;
 }
 
-/* Hero 区域 */
+/* Hero 区域:background1 只占上半(横幅),底部渐隐进天蓝色 */
 .hero-section {
+  position: relative;
   text-align: center;
-  padding: 48px 0 32px;
+  padding: 130px 32px 84px;
+  min-height: 52vh;
+  background: url('../assets/imgs/background1.png') center / cover no-repeat;
+}
+
+.hero-section::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  background: linear-gradient(180deg, rgba(10, 24, 44, 0.3) 0%, rgba(10, 24, 44, 0.18) 45%, #16386b 100%);
+}
+
+.hero-section > * {
+  position: relative;
+  z-index: 1;
 }
 
 .hero-badge {
@@ -340,12 +324,13 @@ export default {
   padding: 5px 16px;
   font-size: 12px;
   font-family: 'Fira Code', monospace;
-  color: @primary;
-  background: rgba(20, 158, 250, 0.08);
-  border: 1px solid rgba(20, 158, 250, 0.2);
+  color: #fff;
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid rgba(255, 255, 255, 0.28);
   border-radius: 20px;
   margin-bottom: 24px;
   letter-spacing: 0.5px;
+  text-shadow: 0 1px 6px rgba(0, 0, 0, 0.6);
 }
 
 .hero-title {
@@ -355,27 +340,32 @@ export default {
   color: @text-primary;
   margin: 0 0 8px;
   letter-spacing: 3px;
+  text-shadow: 0 2px 20px rgba(0, 0, 0, 0.55);
 }
 
 .title-accent {
-  background: linear-gradient(90deg, @accent, @primary);
+  background: linear-gradient(90deg, #ffe14a 0%, #ff8a00 32%, #ff4d6d 66%, #d94fd9 100%);
   -webkit-background-clip: text;
+  background-clip: text;
   -webkit-text-fill-color: transparent;
 }
 
 .hero-subtitle {
   font-size: 24px;
-  color: @text-secondary;
+  color: #fff;
   font-weight: 300;
   margin: 0 0 16px;
   letter-spacing: 6px;
+  text-shadow: 0 2px 14px rgba(0, 0, 0, 0.65);
 }
 
 .hero-desc {
   font-size: 15px;
-  color: @text-muted;
-  line-height: 1.8;
+  color: #fff;
+  line-height: 1.9;
   margin: 0 auto;
+  max-width: 620px;
+  text-shadow: 0 1px 12px rgba(0, 0, 0, 0.7);
 }
 
 .hero-stats {
@@ -416,182 +406,168 @@ export default {
   background: @border-subtle;
 }
 
-/* 产品卡片 - Bento Grid */
-.products-section {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 16px;
-  padding: 32px 0;
+/* 板块 */
+.section-block {
+  padding: 22px 0 0;
 }
 
-.product-card {
-  background: @bg-card;
-  border: 1px solid @border-subtle;
-  border-radius: 16px;
-  padding: 24px 20px;
-  transition: all 0.25s ease;
-  cursor: pointer;
-
-  &:hover {
-    background: rgba(255, 255, 255, 0.06);
-    border-color: rgba(255, 255, 255, 0.15);
-    transform: translateY(-4px);
-    box-shadow: 0 16px 48px rgba(0, 0, 0, 0.4);
-  }
-}
-
-.card-header {
+.block-head {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 16px;
+  align-items: baseline;
+  gap: 12px;
+  margin: 0 32px 16px;
+  padding-left: 12px;
+  border-left: 3px solid @accent;
 }
 
-.card-icon-wrapper {
-  width: 44px;
-  height: 44px;
-  border-radius: 12px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.card-icon {
-  font-size: 22px;
+.block-name {
+  font-size: 18px;
+  font-weight: 700;
   color: #fff;
+  letter-spacing: 1px;
+  text-shadow: 0 2px 10px rgba(0, 0, 0, 0.7);
 }
 
-.card-status {
-  font-size: 11px;
-  padding: 2px 8px;
-  border-radius: 4px;
-  background: rgba(34, 197, 94, 0.1);
-  color: #22c55e;
-  font-family: 'Fira Code', monospace;
-}
-
-.card-title {
-  font-size: 16px;
-  color: @text-primary;
-  margin: 0 0 8px;
-  font-weight: 600;
-}
-
-.card-desc {
+.block-desc {
   font-size: 13px;
-  color: @text-secondary;
-  line-height: 1.7;
-  margin: 0 0 14px;
+  color: rgba(255, 255, 255, 0.78);
+  text-shadow: 0 1px 8px rgba(0, 0, 0, 0.7);
 }
 
-.card-tags {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-.tag {
-  font-size: 11px;
-  font-family: 'Fira Code', monospace;
-  color: @text-muted;
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(255, 255, 255, 0.06);
-  padding: 2px 8px;
-  border-radius: 4px;
-}
-
-/* CTA 按钮 */
-.cta-section {
-  text-align: center;
-  padding: 16px 0 36px;
-}
-
-.cta-button {
-  display: inline-flex;
-  align-items: center;
-  gap: 10px;
-  padding: 14px 40px;
-  font-size: 16px;
-  font-weight: 600;
-  color: #fff;
-  background: linear-gradient(135deg, @accent, @primary);
-  border: none;
-  border-radius: 12px;
-  cursor: pointer;
-  transition: all 0.25s ease;
-  box-shadow: 0 4px 24px rgba(20, 158, 250, 0.25);
-
-  &:hover {
-    transform: translateY(-2px);
-    box-shadow: 0 8px 32px rgba(20, 158, 250, 0.35);
-  }
-
-  &:active {
-    transform: translateY(0);
-  }
-}
-
-.cta-hint {
-  margin-top: 14px;
-  font-size: 13px;
-  color: @text-muted;
-}
-
-/* 示例问题 */
-.capabilities-section {
-  padding: 16px 0 48px;
-}
-
-.section-title {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  font-size: 16px;
-  color: @text-secondary;
-  font-weight: 400;
-  margin: 0 0 20px;
-
-  svg {
-    opacity: 0.5;
-  }
-}
-
-.examples-grid {
+/* 等大图块网格(数字仿真与四端平级,差不多大) */
+.tiles {
   display: grid;
+}
+
+.tiles-uni {
   grid-template-columns: repeat(2, 1fr);
-  gap: 10px;
+  grid-auto-rows: 300px;
 }
 
-.example-item {
+.tile {
+  position: relative;
   display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 13px 18px;
-  background: @bg-card;
-  border: 1px solid @border-subtle;
-  border-radius: 10px;
-  color: @text-secondary;
-  font-size: 14px;
+  align-items: flex-end;
+  overflow: hidden;
   cursor: pointer;
-  transition: all 0.2s ease;
+  height: 100%;
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+  outline: 1px solid rgba(5, 10, 20, 0.6);
+  transition: transform 0.3s ease;
+}
 
-  &:hover {
-    background: rgba(255, 255, 255, 0.06);
-    color: @text-primary;
-    border-color: rgba(255, 255, 255, 0.15);
+/* 半透明压暗叠层:背景半透(rgba)透出深蓝 + 此层整体压暗 = 透明偏暗的玻璃质感 */
+.tile-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  background: linear-gradient(to top, rgba(4, 9, 18, 0.9) 0%, rgba(4, 9, 18, 0.64) 55%, rgba(4, 9, 18, 0.55) 100%);
+  transition: background 0.35s ease;
+}
 
-    .example-arrow {
-      color: @accent;
-      transform: translateX(2px);
-    }
+.tile:not(.disabled):hover .tile-overlay {
+  background: linear-gradient(to top, rgba(4, 9, 18, 0.82) 0%, rgba(4, 9, 18, 0.4) 60%, rgba(4, 9, 18, 0.28) 100%);
+}
+
+/* 无图块的图标水印 */
+.tile-watermark {
+  position: absolute;
+  right: -14px;
+  top: 6px;
+  z-index: 1;
+  font-size: 130px;
+  color: rgba(255, 255, 255, 0.08);
+  pointer-events: none;
+}
+
+/* 状态角标 */
+.tile-status {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  z-index: 3;
+  font-size: 11px;
+  font-family: 'Fira Code', monospace;
+  padding: 3px 10px;
+  border-radius: 6px;
+  background: rgba(34, 197, 94, 0.16);
+  color: #4ade80;
+  border: 1px solid rgba(34, 197, 94, 0.35);
+  backdrop-filter: blur(4px);
+
+  &.status-soon {
+    background: rgba(255, 138, 0, 0.16);
+    color: @accent;
+    border-color: rgba(255, 138, 0, 0.4);
   }
 }
 
-.example-arrow {
-  color: @text-muted;
-  flex-shrink: 0;
-  transition: all 0.2s;
+/* 图块文字区(压在底部) */
+.tile-body {
+  position: relative;
+  z-index: 2;
+  width: 100%;
+  padding: 28px 30px;
+}
+
+.tile-tag {
+  display: inline-block;
+  font-size: 12px;
+  font-family: 'Fira Code', monospace;
+  color: #67e8f9;
+  letter-spacing: 1px;
+  margin-bottom: 10px;
+}
+
+.tile-title {
+  font-size: 46px;
+  font-weight: 800;
+  color: #fff;
+  margin: 0 0 12px;
+  letter-spacing: 1px;
+  line-height: 1.1;
+  text-shadow: 0 2px 16px rgba(0, 0, 0, 0.5);
+}
+
+.tile-desc {
+  font-size: 13.5px;
+  color: rgba(255, 255, 255, 0.78);
+  line-height: 1.65;
+  margin: 0 0 14px;
+  max-width: 92%;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.tile-cta {
+  display: inline-block;
+  font-size: 13px;
+  font-weight: 600;
+  font-family: 'Fira Code', monospace;
+  color: @accent;
+  opacity: 0;
+  transform: translateY(6px);
+  transition: all 0.3s ease;
+}
+
+.tile:not(.disabled):hover .tile-cta {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.tile.disabled {
+  cursor: not-allowed;
+  filter: grayscale(0.35) brightness(0.85);
+
+  .tile-cta {
+    color: @text-muted;
+    opacity: 0.8;
+    transform: none;
+  }
 }
 
 /* 底部 */
@@ -614,33 +590,23 @@ export default {
 
 .footer-text {
   font-size: 12px;
-  color: @text-muted;
+  color: #fff;
 }
 
 /* 响应式 */
-@media (max-width: 900px) {
-  .products-section {
-    grid-template-columns: repeat(2, 1fr);
-  }
+@media (max-width: 980px) {
   .hero-title {
     font-size: 48px;
   }
 }
 
 @media (max-width: 600px) {
-  .products-section {
+  .tiles-uni {
     grid-template-columns: 1fr;
+    grid-auto-rows: 200px;
   }
-  .examples-grid {
-    grid-template-columns: 1fr;
-  }
-  .hero-stats {
-    flex-direction: column;
-    gap: 16px;
-  }
-  .stat-divider {
-    width: 32px;
-    height: 1px;
+  .tile-title {
+    font-size: 19px;
   }
 }
 </style>
