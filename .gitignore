@@ -53,6 +53,10 @@ llmcoking/src/LLM_back/deepcoke/data/kg_entities.json
 # 构建产物
 llmcoking/dist/
 
+# 打包/传输用的压缩包(构建产物 + 部署补丁,临时,不入库)
+*.tar.gz
+*.zip
+
 # 日志
 *.log
 npm-debug.log*
