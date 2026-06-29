@@ -600,7 +600,7 @@ async def get_paper_pdf(paper_id: int):
     db.close()
     if not row:
         raise HTTPException(status_code=404, detail=f"paper_id={paper_id} 不存在")
-    file_path = (row[0] or "").replace("/", "\\")
+    file_path = row[0] or ""   # 直接用库里的路径(Linux 正斜杠;Path 跨平台兼容,勿做 / → \ 替换)
     if not file_path or not Path(file_path).exists():
         raise HTTPException(status_code=404, detail=f"PDF 文件不存在: {file_path}")
 
@@ -632,7 +632,7 @@ async def get_paper_figure(paper_id: int, page: int = 0, bbox: str = ""):
     db.close()
     if not row:
         raise HTTPException(status_code=404, detail=f"paper_id={paper_id} 不存在")
-    file_path = (row[0] or "").replace("/", "\\")
+    file_path = row[0] or ""   # 直接用库里的路径(Linux 正斜杠;Path 跨平台兼容,勿做 / → \ 替换)
     if not file_path or not Path(file_path).exists():
         raise HTTPException(status_code=404, detail=f"PDF 文件不存在: {file_path}")
 
