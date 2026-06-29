@@ -21,6 +21,7 @@ import asyncio
 import json
 import logging
 import operator
+import re
 from typing import Annotated, AsyncGenerator
 from typing_extensions import TypedDict
 
@@ -429,6 +430,71 @@ def _select_key_figures(packed_papers: list, query: str) -> list:
     return out
 
 
+# ── Citation verifier:校验答案里每个 [N] 是否真被该篇证据支持(跨语言 BGE),弱的标 ⚠ ──
+CITE_VERIFY_MIN = 0.30   # claim↔evidence 支持分阈值,低于判"弱支持"
+
+
+def node_verify_citations(state: EnhancedPipelineState) -> dict:
+    """生成后校验引用:对答案里每个 [N] 所在句子,用 BGE 给(句子, 该篇证据)打分,
+    弱支持的标给前端(非破坏,不删答案)。从累加的 output 里自取 LITQA_META/DICT_REFS。"""
+    full = "".join(state.get("output", []))
+    answer = re.sub(r"<!--[\s\S]*?-->", "", full)
+    answer = re.sub(r"<details[\s\S]*?</details>", "", answer)
+    answer = re.sub(r"<[^>]+>", "", answer)
+    if "[" not in answer:
+        return {"output": []}
+
+    # ref → 证据文本(RAG 来自 LITQA_META.chunks;字典来自 LITQA_DICT_REFS.quote)
+    ref_ev: dict = {}
+    m = re.search(r"<!--LITQA_META:([\s\S]*?)-->", full)
+    if m:
+        try:
+            for c in (json.loads(m.group(1)).get("chunks") or []):
+                ref_ev.setdefault(c.get("ref"), []).append((c.get("text") or "")[:600])
+        except Exception:
+            pass
+    md = re.search(r"<!--LITQA_DICT_REFS:([\s\S]*?)-->", full)
+    if md:
+        try:
+            for ref, d in json.loads(md.group(1)).items():
+                ref_ev.setdefault(int(ref), []).append((d.get("quote") or "")[:600])
+        except Exception:
+            pass
+    if not ref_ev:
+        return {"output": []}
+
+    # ref → 含该 [N] 的句子
+    ref_sents: dict = {}
+    for mm in re.finditer(r"([^。！？!?\n]{0,160}?)\[(\d+)\]", answer):
+        try:
+            ref = int(mm.group(2))
+        except ValueError:
+            continue
+        sent = mm.group(1).strip()
+        if sent and ref in ref_ev:
+            ref_sents.setdefault(ref, []).append(sent)
+
+    verify: dict = {}
+    for ref, evs in ref_ev.items():
+        sents = ref_sents.get(ref)
+        evs = [e for e in evs if e]
+        if not sents or not evs:
+            continue
+        claim = max(sents, key=len)
+        try:
+            ranked = bge_rerank(claim, [(i, e) for i, e in enumerate(evs)])
+            best = max((s for _, s in ranked), default=0.0)
+        except Exception as e:
+            logger.warning(f"[verify] rerank 失败: {e}")
+            continue
+        verify[ref] = {"ok": float(best) >= CITE_VERIFY_MIN, "score": round(float(best), 3)}
+
+    if verify:
+        logger.info(f"[verify] {sum(1 for v in verify.values() if not v['ok'])}/{len(verify)} 弱支持引用")
+        return {"output": [f"<!--LITQA_CITE_VERIFY:{json.dumps(verify, ensure_ascii=False)}-->\n"]}
+    return {"output": []}
+
+
 # ══════════════════════════════════════════════════════════════════
 # 路由函数(简化版,跳过 kg_lookup 和 reason)
 # ══════════════════════════════════════════════════════════════════
@@ -471,6 +537,7 @@ def build_enhanced_graph() -> StateGraph:
     g.add_node("followup", old_pipeline.node_followup)
     # 新节点
     g.add_node("fast_summary_retrieve", node_fast_summary_retrieve)
+    g.add_node("verify_citations", node_verify_citations)
 
     # 边
     g.add_edge(START, "supervisor")
@@ -489,7 +556,8 @@ def build_enhanced_graph() -> StateGraph:
     g.add_conditional_edges("structured_lookup", route_after_structured, {
         "generate": "generate",
     })
-    g.add_edge("generate", "followup")
+    g.add_edge("generate", "verify_citations")
+    g.add_edge("verify_citations", "followup")
     g.add_edge("followup", END)
 
     return g.compile()

@@ -691,20 +691,25 @@ export default {
         html = html.replace(/\s*\[#\d+\]/g, '')
         // 字典引用映射(续 RAG 编号的 [6][7][8]…),点击用 quote 在 PDF 文本高亮
         const dictRefs = message.litqaDictRefs || {}
+        const verify = message.litqaCiteVerify || {}
         // [N] 引用 → 链接:字典 ref 走 quant-cite(quote 高亮),RAG ref 走 litqa-cite(top chunk)
+        // citation verifier 判"弱支持"的加 cite-weak(置灰 + ⚠ 提示,不删)
         html = html.replace(/\[(\d+)\](?!\()/g, (m, n) => {
           const ref = parseInt(n)
+          const weak = verify[ref] && verify[ref].ok === false
+          const wCls = weak ? ' cite-weak' : ''
+          const wAttr = weak ? ' title="⚠ 该引用证据支持较弱,建议点开核对原文"' : ''
           const dr = dictRefs[ref]
           if (dr && dr.paper_id) {
             const q = (dr.quote || '').replace(/"/g, '&quot;')
             const t = (dr.title || '').replace(/"/g, '&quot;')
-            return `<a class="quant-cite" data-paper-id="${dr.paper_id}" data-quote="${q}" data-title="${t}" href="#">[${ref}]</a>`
+            return `<a class="quant-cite${wCls}" data-paper-id="${dr.paper_id}" data-quote="${q}" data-title="${t}"${wAttr} href="#">[${ref}]</a>`
           }
           const pid = refToPid[ref] || ''
           if (!pid) return m
           const preview = refToPreview[ref] || ''
           const previewAttr = preview ? ` data-preview="${preview}"` : ''
-          return `<a class="litqa-cite" data-ref="${ref}" data-paper-id="${pid}"${previewAttr} href="#">[${ref}]</a>`
+          return `<a class="litqa-cite${wCls}" data-ref="${ref}" data-paper-id="${pid}"${previewAttr}${wAttr} href="#">[${ref}]</a>`
         })
       }
 
@@ -829,6 +834,7 @@ export default {
         let progressBlock = ''
         const LITQA_META_RE = /<!--LITQA_META:([\s\S]*?)-->\s*/
         const LITQA_DICT_RE = /<!--LITQA_DICT_REFS:([\s\S]*?)-->\s*/
+        const LITQA_VERIFY_RE = /<!--LITQA_CITE_VERIFY:([\s\S]*?)-->\s*/
 
         while (true) {
           const { value, done } = await reader.read()
@@ -864,6 +870,18 @@ export default {
                   console.warn('parse LITQA_DICT_REFS failed', e)
                 }
                 botReply = botReply.replace(LITQA_DICT_RE, '')
+              }
+            }
+            // 截获引用校验结果(弱支持的 [N] 渲染时标 ⚠)
+            if (!botMessage.litqaCiteVerify) {
+              const mv = botReply.match(LITQA_VERIFY_RE)
+              if (mv) {
+                try {
+                  this.$set(botMessage, 'litqaCiteVerify', JSON.parse(mv[1]))
+                } catch (e) {
+                  console.warn('parse LITQA_CITE_VERIFY failed', e)
+                }
+                botReply = botReply.replace(LITQA_VERIFY_RE, '')
               }
             }
             botMessage.text = progressBlock + botReply
@@ -1231,6 +1249,15 @@ export default {
 }
 :deep(a.litqa-cite:hover) {
   background: rgba(74, 144, 226, 0.2);
+}
+/* citation verifier 判弱支持:置灰 + ⚠(仍可点核对) */
+:deep(a.cite-weak) {
+  opacity: 0.5;
+}
+:deep(a.cite-weak)::after {
+  content: '⚠';
+  font-size: 0.78em;
+  margin-left: 1px;
 }
 /* hover 显示原句前 200 字 tooltip — 类 NotebookLM 风格 */
 :deep(a.litqa-cite[data-preview]:hover::after) {
