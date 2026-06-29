@@ -476,23 +476,45 @@ Your job:
    - "是什么/什么是" → "definition / concept of"
    - "为什么" → "mechanism / cause / reason"
    - 把口语化问题转成论文标题/章节风格的查询
-3. Generate **2-3 diverse** English search queries from different angles
-   (one general, one process/mechanism-focused, one property/measurement-focused).
+3. Act as a QUERY PLANNER: generate **6-10 diverse** English search queries that together
+   cast a WIDE net. Cover these angles (skip ones irrelevant to the question):
+   - core concept (general phrasing)
+   - mechanism / process / evolution pathway
+   - **characterization methods** relevant to the topic (XRD, Raman, HRTEM, SAXS/WAXS,
+     FTIR, TGA, optical texture, NMR) — for structure/mechanism questions ALWAYS add these
+   - related entities / synonyms / alternative phrasings
+     (carbonization ↔ coking ↔ pyrolysis; turbostratic ↔ disordered/microcrystalline carbon;
+      crystallite La/Lc/d002; vitrinite ↔ inertinite ↔ maceral)
+   - specific materials / conditions (coal rank, maceral, temperature stage, heating rate, atmosphere)
+   - if a review would help, one query targeting "review / state-of-the-art"
+   Each query must be a DIFFERENT angle, not a trivial reword. Use exact academic terms/abbreviations.
 4. Extract key domain concepts/entities for knowledge graph lookup.
 
 Return a JSON object:
 {
-  "english_queries": ["query1", "query2", "query3"],
+  "english_queries": ["q1", "q2", "q3", "q4", "q5", "q6", "..."],
   "key_concepts": ["CSR", "coal fluidity", "vitrinite"],
-  "key_methods": ["FTIR", "TG-MS"],
+  "key_methods": ["XRD", "Raman", "HRTEM"],
   "key_materials": ["coking coal", "semi-coke"],
   "resolved_question": "the question after resolving pronouns (in Chinese, for logging)"
 }
 
+Example (question: 煤的碳结构演化过程):
+  "english_queries": [
+    "coal carbon structure evolution during carbonization",
+    "coal pyrolysis aromatic layer stacking turbostratic carbon",
+    "coke optical texture and microcrystalline structure evolution",
+    "XRD La Lc d002 evolution of coal char with temperature",
+    "HRTEM Raman characterization of coal-derived carbon structure",
+    "plastic layer chemistry semi-coke to coke transformation",
+    "vitrinite inertinite effect on coke carbon structure"
+  ]
+
 Rules:
-- ALWAYS return at least 2 english_queries with different phrasings.
-- Use standard academic terminology and abbreviations (CSR, CRI, FTIR, TGA, etc.).
-- If the input is already in English, still generate optimized queries.
+- Return 6-10 english_queries, each a genuinely different angle/phrasing.
+- For structure/mechanism questions, ALWAYS include characterization-method queries (XRD/Raman/HRTEM/SAXS).
+- Use standard academic terminology and abbreviations.
+- If the input is already in English, still generate diverse optimized queries.
 - Return ONLY the JSON object, no markdown fences, no explanation."""
 
 
@@ -562,8 +584,8 @@ def translate_query(question: str, history: list[dict] | None = None) -> dict:
         cleaned = [pre_q] + cleaned
     if not cleaned:
         cleaned = [pre_q or question]
-    # 截到 3 个,避免下游召回开销过大
-    cleaned = cleaned[:3]
+    # query planner:放宽到 8 个多样检索式(撒宽召回网);太多则下游召回开销大
+    cleaned = cleaned[:8]
 
     return {
         "english_queries": cleaned,
