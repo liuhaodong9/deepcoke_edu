@@ -112,6 +112,16 @@ class Favorite(Base):
     year = Column(Integer, nullable=True)
     created_at = Column(TIMESTAMP, server_default=func.now())
 
+# ⑫ 论文笔记表(用户对某篇的笔记;一用户一篇一条,内容可更新)
+class PaperNote(Base):
+    __tablename__ = "paper_notes"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(String(50), nullable=False, index=True)
+    paper_id = Column(Integer, nullable=False)
+    title = Column(String(500), nullable=True)
+    content = Column(Text, nullable=False)
+    updated_at = Column(TIMESTAMP, server_default=func.now())
+
 # 延迟初始化数据库（在 FastAPI 启动事件中执行，避免模块加载时 MySQL 未启动导致崩溃）
 def _migrate_add_columns(conn):
     """给老库 chat_sessions 补 folder_id / title 列；老库没有就跳过。MySQL 没有 IF NOT EXISTS，捕获异常即可。"""
@@ -559,6 +569,54 @@ async def remove_favorite(user_id: str, paper_id: int, db: Session = Depends(get
          .delete(synchronize_session=False))
     db.commit()
     return {"status": "ok", "removed": n}
+
+
+# ══════════════════════════════════════════════════════════════════
+# ⑫ 论文笔记
+# ══════════════════════════════════════════════════════════════════
+class NoteBody(BaseModel):
+    user_id: str
+    paper_id: int
+    title: Optional[str] = None
+    content: str
+
+
+@app.get("/notes/")
+async def get_note(user_id: str, paper_id: int, db: Session = Depends(get_db)):
+    """取某篇笔记(没有返回空)。"""
+    n = (db.query(PaperNote)
+         .filter(PaperNote.user_id == user_id, PaperNote.paper_id == paper_id).first())
+    return {"paper_id": paper_id, "content": n.content if n else "", "title": n.title if n else ""}
+
+
+@app.get("/notes/list")
+async def list_notes(user_id: str, db: Session = Depends(get_db)):
+    """列出用户所有笔记(按更新时间倒序)。"""
+    rows = (db.query(PaperNote).filter(PaperNote.user_id == user_id)
+            .order_by(PaperNote.updated_at.desc()).all())
+    return [{"paper_id": r.paper_id, "title": r.title, "content": r.content} for r in rows]
+
+
+@app.post("/notes/")
+async def save_note(body: NoteBody, db: Session = Depends(get_db)):
+    """保存/更新某篇笔记。content 空则删除该笔记。"""
+    n = (db.query(PaperNote)
+         .filter(PaperNote.user_id == body.user_id, PaperNote.paper_id == body.paper_id).first())
+    if not (body.content or "").strip():
+        if n:
+            db.delete(n)
+            db.commit()
+        return {"status": "deleted", "paper_id": body.paper_id}
+    if n:
+        n.content = body.content
+        n.title = (body.title or n.title or "")[:500]
+        n.updated_at = datetime.utcnow()
+    else:
+        n = PaperNote(user_id=body.user_id, paper_id=body.paper_id,
+                      title=(body.title or "")[:500], content=body.content)
+        db.add(n)
+    db.commit()
+    return {"status": "ok", "paper_id": body.paper_id}
 
 
 # 4️⃣ **查询某个会话的所有聊天记录**

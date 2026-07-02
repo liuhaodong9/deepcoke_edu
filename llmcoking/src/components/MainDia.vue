@@ -108,6 +108,7 @@
                       🔗 相似论文 {{ similarOpen[p.paper_id] ? '▾' : '▸' }}
                     </span>
                     <span class="litqa-similar-toggle" @click.stop="startFocusRead(p)">📖 精读这篇</span>
+                    <span class="litqa-similar-toggle" @click.stop="openNote(p)">📝 笔记</span>
                   </div>
                   <div v-if="similarOpen[p.paper_id]" class="litqa-similar-list" @click.stop>
                     <div v-if="!(similarCache[p.paper_id] || []).length" class="litqa-similar-empty">
@@ -327,6 +328,24 @@
         <button class="ev-pdf-btn" @click="evidenceViewPdf">查看 PDF 原文 →</button>
       </div>
     </div>
+
+    <!-- ⑫ 论文笔记编辑弹框 -->
+    <div v-if="noteEdit.show" class="ev-mask" @click.self="noteEdit.show = false">
+      <div class="note-modal" @click.stop>
+        <div class="note-head">
+          <span>📝 {{ noteEdit.title }}</span>
+          <span class="ev-close" @click="noteEdit.show = false">✕</span>
+        </div>
+        <textarea
+          v-model="noteEdit.content"
+          class="note-textarea"
+          placeholder="记录你对这篇文献的笔记、要点、想法…（清空并保存即删除）"
+        ></textarea>
+        <button class="ev-pdf-btn" :disabled="noteEdit.saving" @click="saveNote">
+          {{ noteEdit.saving ? '保存中…' : '保存笔记' }}
+        </button>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -364,6 +383,8 @@ export default {
       ],
       // 精读模式:锁定单篇(focus_paper_id 传后端,只检索这一篇)
       focusPaper: null,
+      // ⑫ 论文笔记编辑弹框
+      noteEdit: { show: false, paper_id: 0, title: '', content: '', saving: false },
       // 相似论文推荐(语义最近邻)
       similarCache: {},
       similarOpen: {},
@@ -573,6 +594,37 @@ export default {
       const c = this.evidenceCard
       if (c.paper) this.openPdfPreview(c.paper, c.chunk || { text: c.claim })
       this.closeEvidenceCard()
+    },
+    async openNote (p) {
+      // ⑫ 打开笔记编辑:先拉已有内容
+      this.noteEdit = { show: true, paper_id: p.paper_id, title: p.title || ('Paper ' + p.paper_id), content: '', saving: false }
+      try {
+        const r = await apiFetch(`/notes/?user_id=${encodeURIComponent(this._favUser())}&paper_id=${p.paper_id}`)
+        if (r.ok) { const d = await r.json(); this.noteEdit.content = d.content || '' }
+      } catch (e) { /* 静默 */ }
+    },
+    async saveNote () {
+      this.noteEdit.saving = true
+      try {
+        const r = await apiFetch('/notes/', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            user_id: this._favUser(),
+            paper_id: this.noteEdit.paper_id,
+            title: this.noteEdit.title,
+            content: this.noteEdit.content
+          })
+        })
+        if (r.ok) {
+          this.$message && this.$message.success('笔记已保存')
+          this.noteEdit.show = false
+        }
+      } catch (e) {
+        this.$message && this.$message.error('保存失败')
+      } finally {
+        this.noteEdit.saving = false
+      }
     },
     startFocusRead (p) {
       // 精读模式:锁定这一篇,之后的问题只检索它
@@ -1761,6 +1813,50 @@ export default {
 }
 .ev-pdf-btn:hover {
   background: #245a93;
+}
+.note-modal {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 460px;
+  max-width: 90vw;
+  background: #fff;
+  border-radius: 10px;
+  box-shadow: 0 8px 28px rgba(20, 50, 90, 0.25);
+  padding: 16px;
+}
+.note-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-weight: 600;
+  color: #1a3556;
+  margin-bottom: 10px;
+  font-size: 13.5px;
+}
+.note-head > span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-right: 10px;
+}
+.note-textarea {
+  width: 100%;
+  height: 180px;
+  box-sizing: border-box;
+  border: 1px solid #d9e2ec;
+  border-radius: 6px;
+  padding: 10px;
+  font-size: 13px;
+  line-height: 1.6;
+  resize: vertical;
+  color: #2a3a4d;
+  margin-bottom: 12px;
+}
+.note-textarea:focus {
+  outline: none;
+  border-color: #4a90e2;
 }
 .fav-fade-enter-active,
 .fav-fade-leave-active {
