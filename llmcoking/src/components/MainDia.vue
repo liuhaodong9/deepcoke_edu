@@ -107,6 +107,7 @@
                     <span class="litqa-similar-toggle" @click.stop="toggleSimilar(p.paper_id)">
                       🔗 相似论文 {{ similarOpen[p.paper_id] ? '▾' : '▸' }}
                     </span>
+                    <span class="litqa-similar-toggle" @click.stop="startFocusRead(p)">📖 精读这篇</span>
                   </div>
                   <div v-if="similarOpen[p.paper_id]" class="litqa-similar-list" @click.stop>
                     <div v-if="!(similarCache[p.paper_id] || []).length" class="litqa-similar-empty">
@@ -156,6 +157,11 @@
 
     <!-- 输入区域 -->
     <div class="input-area">
+      <!-- 精读模式:锁定单篇提示条 -->
+      <div v-if="focusPaper" class="focus-bar">
+        📖 精读中：<span class="focus-title">{{ focusPaper.title }}</span>
+        <span class="focus-exit" @click="exitFocusRead">退出精读 ✕</span>
+      </div>
       <!-- 玻尔-A:回答模式选择器 -->
       <div class="mode-tabs">
         <button
@@ -353,8 +359,11 @@ export default {
         { key: 'qa', label: '智能问答', tip: '默认:综合多篇文献生成回答' },
         { key: 'discovery', label: '找文献', tip: '只返回相关论文列表,不生成长文' },
         { key: 'review', label: '综述', tip: '结构化综述:背景/机制/方法/趋势' },
-        { key: 'compare', label: '对比', tip: '逐篇横向对比表' }
+        { key: 'compare', label: '对比', tip: '逐篇横向对比表' },
+        { key: 'trend', label: '趋势', tip: '按年份汇总研究演变脉络' }
       ],
+      // 精读模式:锁定单篇(focus_paper_id 传后端,只检索这一篇)
+      focusPaper: null,
       // 相似论文推荐(语义最近邻)
       similarCache: {},
       similarOpen: {},
@@ -564,6 +573,14 @@ export default {
       const c = this.evidenceCard
       if (c.paper) this.openPdfPreview(c.paper, c.chunk || { text: c.claim })
       this.closeEvidenceCard()
+    },
+    startFocusRead (p) {
+      // 精读模式:锁定这一篇,之后的问题只检索它
+      this.focusPaper = { paper_id: p.paper_id, title: p.title || ('Paper ' + p.paper_id) }
+      this.$message && this.$message.success('已进入精读:' + this.focusPaper.title.slice(0, 30))
+    },
+    exitFocusRead () {
+      this.focusPaper = null
     },
     async toggleSimilar (pid) {
       // 相似论文:展开时按需拉取语义最近邻
@@ -1132,8 +1149,9 @@ export default {
       }
 
       try {
+        const focusQ = this.focusPaper ? `&focus_paper_id=${this.focusPaper.paper_id}` : ''
         const response = await apiFetch(
-          `/chat/?session_id=${sessionToUse}&user_message=${encodeURIComponent(userText)}&mode=${this.chatMode}`,
+          `/chat/?session_id=${sessionToUse}&user_message=${encodeURIComponent(userText)}&mode=${this.chatMode}${focusQ}`,
           { method: 'POST' }
         )
         const reader = response.body.getReader()
@@ -1754,6 +1772,38 @@ export default {
 }
 .litqa-similar-bar {
   margin-top: 5px;
+  display: flex;
+  gap: 14px;
+}
+.focus-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  padding: 6px 12px;
+  background: #fff5e6;
+  border: 1px solid #f0d0a0;
+  border-radius: 6px;
+  font-size: 12.5px;
+  color: #a05a00;
+}
+.focus-title {
+  font-weight: 600;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.focus-exit {
+  cursor: pointer;
+  color: #c77f12;
+  flex-shrink: 0;
+}
+.focus-exit:hover {
+  color: #a05a00;
+}
+[data-theme="light"] .focus-bar {
+  background: #fff5e6;
 }
 .litqa-similar-toggle {
   font-size: 11.5px;

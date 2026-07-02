@@ -261,7 +261,7 @@ async def create_session(user_id: str, db: Session = Depends(get_db)):
 
 # ✅ **DeepCoke 知识增强问答端点（RAG + ESCARGOT推理 + 知识图谱）**
 @app.post("/chat/")
-async def chat(session_id: str, user_message: str, mode: str = "qa", db: Session = Depends(get_db)):
+async def chat(session_id: str, user_message: str, mode: str = "qa", focus_paper_id: int = 0, db: Session = Depends(get_db)):
     # 读取最近 3 轮历史(给 query 跨轮补全用),按时间正序排列
     history = []
     try:
@@ -288,7 +288,7 @@ async def chat(session_id: str, user_message: str, mode: str = "qa", db: Session
             # 使用 DeepCoke 知识增强管线处理问题
             # 管线内部完成：问题分类 → 中英翻译 → 向量检索 + KG检索 →
             # ESCARGOT推理(复杂问题) → 证据驱动回答生成 → 延伸问题生成
-            async for piece in process_question(user_message, history=history, mode=mode):
+            async for piece in process_question(user_message, history=history, mode=mode, focus_paper_id=focus_paper_id):
                 bot_response_parts.append(piece)
                 yield piece
                 await asyncio.sleep(0)
