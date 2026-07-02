@@ -73,6 +73,9 @@ class EnhancedPipelineState(TypedDict):
     supervisor_reasoning: str
     english_queries: list[str]
     key_concepts: list[str]
+    constraints: dict           # ⑩ 多轮约束(year_after / exclude_doctypes)
+    mode: str                   # 玻尔-A 回答模式: qa/discovery/review/compare
+    focus_paper_id: int         # 精读模式:只检索这一篇(0=不限)
     chunks: list                # RetrievedChunk 列表(每条 = 一篇论文的 deep_summary)
     kg_context: str
     structured_evidence: str
@@ -89,6 +92,39 @@ class EnhancedPipelineState(TypedDict):
 # 新节点: summary_filter_fulltext_retrieve (2026-06-09)
 # 算法: 检索候选 → BGE rerank → 按 token budget 装全文(带 [#N] 标记) → generate
 # ══════════════════════════════════════════════════════════════════
+
+def _classify_doctype(title: str) -> str:
+    """从标题粗判文献类型。corrigendum/editorial 不该当主要证据。"""
+    t = (title or "").lower().strip()
+    if re.match(r"^\s*(corrigendum|erratum|retraction|withdrawn)\b", t) or "corrigendum to" in t or "erratum to" in t:
+        return "corrigendum"
+    if re.match(r"^\s*(editorial|reply to|comment on|response to|preface|foreword|book review)\b", t):
+        return "editorial"
+    if re.search(r"\b(review|overview|state[- ]of[- ]the[- ]art|advances in|progress in|perspective)\b", t):
+        return "review"
+    return "research"
+
+
+_NONEVIDENCE_TYPES = ("corrigendum", "editorial")   # 不当证据的类型
+
+
+def _quality_bonus(paper: dict, summary_type: str, key_concepts: list) -> float:
+    """⑧ 文献质量微调分(0~0.04)。BGE 是 0-1 归一分(阈值0.7),故封顶很小做 tie-break。"""
+    bonus = 0.0
+    if summary_type and "abstract" not in summary_type.lower():
+        bonus += 0.015
+    try:
+        yr = int(paper.get("year", 0) or 0)
+        if yr >= 2010:
+            bonus += min(0.015, (yr - 2010) * 0.015 / 14)
+    except (ValueError, TypeError):
+        pass
+    title = (paper.get("title", "") or "").lower()
+    if key_concepts:
+        hit = sum(1 for kc in key_concepts if kc and str(kc).lower() in title)
+        bonus += min(0.01, hit * 0.005)
+    return bonus
+
 
 def node_fast_summary_retrieve(state: EnhancedPipelineState) -> dict:
     """Node: summary 当过滤器 + 全文当证据。
@@ -137,6 +173,35 @@ def node_fast_summary_retrieve(state: EnhancedPipelineState) -> dict:
     if not candidate_paper_ids:
         return _fallback_to_retrieve(state, out, steps, reason="no candidates voted")
 
+    # 精读模式:只保留 focus 那一篇
+    _focus = int(state.get("focus_paper_id") or 0)
+    if _focus:
+        candidate_paper_ids = [_focus]
+
+    # ⑩ 多轮约束硬过滤(year_after / 排除综述);过滤后为空则忽略。meta 顺手缓存复用。
+    paper_meta_cache: dict[int, dict] = {}
+    cons = state.get("constraints") or {}
+    if cons and not _focus:
+        ya, excl = cons.get("year_after"), set(cons.get("exclude_doctypes") or [])
+        kept = []
+        for pid in candidate_paper_ids:
+            m = _get_paper_meta(pid)
+            paper_meta_cache[pid] = m
+            try:
+                yr = int(m.get("year", 0) or 0)
+            except (ValueError, TypeError):
+                yr = 0
+            if ya and yr and yr < ya:
+                continue
+            if excl and _classify_doctype(m.get("title", "")) in excl:
+                continue
+            kept.append(pid)
+        if kept:
+            logger.info(f"[constraints] {cons}: {len(candidate_paper_ids)}→{len(kept)} 候选")
+            candidate_paper_ids = kept
+        else:
+            logger.info(f"[constraints] {cons} 过滤后候选为空,忽略约束")
+
     # per-paper 检索分(后续作为 fallback score)
     retrieval_score_by_pid: dict[int, float] = {}
     for c in all_chunks:
@@ -158,12 +223,15 @@ def node_fast_summary_retrieve(state: EnhancedPipelineState) -> dict:
     out.append(old_pipeline._progress_html(steps_b))
 
     rerank_docs: list[tuple[int, str]] = []
-    paper_meta_cache: dict[int, dict] = {}
     summary_type_by_pid: dict[int, str] = {}
 
     for pid in candidate_paper_ids:
-        meta = _get_paper_meta(pid)
+        meta = paper_meta_cache.get(pid) or _get_paper_meta(pid)
         paper_meta_cache[pid] = meta
+        # corrigendum/社论不当主要证据,从候选剔除(精读模式除外)
+        if not _focus and _classify_doctype(meta.get("title", "")) in _NONEVIDENCE_TYPES:
+            logger.info(f"[fast_summary] 剔除非研究文献 paper={pid}: {meta.get('title', '')[:60]}")
+            continue
         summary_result = tool_read_paper_summary(pid)
         summary_text = (summary_result.get("summary") or "").strip()
         summary_type = summary_result.get("summary_type", "")
@@ -234,6 +302,12 @@ def node_fast_summary_retrieve(state: EnhancedPipelineState) -> dict:
             "summary_type": summary_type_by_pid.get(pid, ""),
         })
 
+    # ⑧ 质量排序:BGE 分上叠小幅质量分,只重排打包先后,不动纳入门槛(封顶+0.04 → tie-break)
+    kcs = state.get("key_concepts", []) or []
+    for rp in ranked_papers:
+        rp["quality"] = round(rp["score"] + _quality_bonus(rp, rp.get("summary_type", ""), kcs), 4)
+    ranked_papers.sort(key=lambda r: r["quality"], reverse=True)
+
     # 每篇只装 top-M 相关 chunk(不是全文),让多篇都进 prompt 做整合
     chunk_query = (eng_queries[0] if eng_queries else state.get("question", "")) or rerank_query
     evidence_text, packed_papers, packed_chunks = pack_chunk_evidence(
@@ -282,6 +356,7 @@ def node_fast_summary_retrieve(state: EnhancedPipelineState) -> dict:
             "cited": True,
             "ref_num": p["ref_num"],
             "summary_type": p.get("summary_type", ""),
+            "doctype": _classify_doctype(p["title"]),
         }
         for p in packed_papers
     ]
@@ -315,6 +390,7 @@ def node_fast_summary_retrieve(state: EnhancedPipelineState) -> dict:
         "question": state["question"],
         "english_queries": eng_queries,
         "key_concepts": state.get("key_concepts", []),
+        "constraints": state.get("constraints") or {},
         "papers": papers_meta,
         "chunks": chunks_meta,
         "figures": figures_meta,
@@ -334,12 +410,21 @@ def node_fast_summary_retrieve(state: EnhancedPipelineState) -> dict:
     )
     logger.info(f"[summary_filter] {rationale}")
 
+    # GraphRAG-lite:概念图就绪时给查询概念拼"相关概念/共现"喂生成(kg_entities.json 缺则空)
+    kg_context = ""
+    try:
+        from .knowledge_graph import kg_index
+        kg_context = kg_index.build_kg_context(state.get("key_concepts") or [])
+    except Exception as e:
+        logger.warning(f"[kg] build_kg_context 失败: {e}")
+
     return {
         "chunks": out_chunks,
         "agent_papers_meta": papers_meta,
         "agent_finalize_rationale": rationale,
         "agent_iterations": 0,
         "agent_fallback": False,
+        "kg_context": kg_context,
         "output": out,
     }
 
@@ -390,6 +475,7 @@ def _fallback_to_retrieve(state: EnhancedPipelineState, out, steps, reason: str)
 # ── C⑨': 关键图片选取(无 VLM,图文 caption 关联) ──────────────────────
 FIGURE_RERANK_MIN = 0.30   # 图 caption 与 query 的相关阈值,低于不展示
 FIGURE_TOP_N = 3
+FIGURE_RERANK_MAX = 30     # CPU 重排图注上限(全量 187 图 61s,封顶保响应)
 
 
 def _select_key_figures(packed_papers: list, query: str) -> list:
@@ -417,6 +503,9 @@ def _select_key_figures(packed_papers: list, query: str) -> list:
         return []
     if not cands:
         return []
+    if len(cands) > FIGURE_RERANK_MAX:
+        logger.info(f"[figures] {len(cands)} 图注截到 {FIGURE_RERANK_MAX} 再重排")
+        cands = cands[:FIGURE_RERANK_MAX]
     try:
         ranked = bge_rerank(query, [(i, c["caption"]) for i, c in enumerate(cands)])
     except Exception as e:
@@ -434,9 +523,32 @@ def _select_key_figures(packed_papers: list, query: str) -> list:
 CITE_VERIFY_MIN = 0.30   # claim↔evidence 支持分阈值,低于判"弱支持"
 
 
+def _confidence_label(score: float) -> str:
+    """句子级证据链:支持分 → 置信度高/中/低。"""
+    if score >= 0.6:
+        return "高"
+    if score >= CITE_VERIFY_MIN:
+        return "中"
+    return "低"
+
+
+def _evidence_type(ev: dict, doctype: str = "") -> str:
+    """句子级证据链:从证据 chunk 元数据推证据类型(表格/图注/实验结果/综述结论/正文)。"""
+    if ev.get("table_no"):
+        return "表格"
+    if ev.get("figure_no") or ev.get("block_type") == "figure":
+        return "图注"
+    sec = (ev.get("section_path") or ev.get("section") or "").lower()
+    if any(k in sec for k in ("result", "discussion", "experiment", "结果", "实验", "讨论")):
+        return "实验结果"
+    if doctype == "review" or any(k in sec for k in ("review", "introduction", "综述", "引言")):
+        return "综述结论"
+    return "正文"
+
+
 def node_verify_citations(state: EnhancedPipelineState) -> dict:
-    """生成后校验引用:对答案里每个 [N] 所在句子,用 BGE 给(句子, 该篇证据)打分,
-    弱支持的标给前端(非破坏,不删答案)。从累加的 output 里自取 LITQA_META/DICT_REFS。"""
+    """生成后校验引用:每个 [N] 用 BGE 核(句子,证据)打分,输出句子级证据链
+    (置信度/证据类型/页码/证据片段/支持句)。非破坏,不删答案。"""
     full = "".join(state.get("output", []))
     answer = re.sub(r"<!--[\s\S]*?-->", "", full)
     answer = re.sub(r"<details[\s\S]*?</details>", "", answer)
@@ -444,20 +556,34 @@ def node_verify_citations(state: EnhancedPipelineState) -> dict:
     if "[" not in answer:
         return {"output": []}
 
-    # ref → 证据文本(RAG 来自 LITQA_META.chunks;字典来自 LITQA_DICT_REFS.quote)
+    # ref → 证据(带元数据);ref → doctype
     ref_ev: dict = {}
+    ref_doctype: dict = {}
     m = re.search(r"<!--LITQA_META:([\s\S]*?)-->", full)
     if m:
         try:
-            for c in (json.loads(m.group(1)).get("chunks") or []):
-                ref_ev.setdefault(c.get("ref"), []).append((c.get("text") or "")[:600])
+            meta = json.loads(m.group(1))
+            for c in (meta.get("chunks") or []):
+                ref_ev.setdefault(c.get("ref"), []).append({
+                    "text": (c.get("text") or "")[:600],
+                    "page": c.get("page", 0),
+                    "block_type": c.get("block_type", ""),
+                    "section_path": c.get("section_path", "") or c.get("section", ""),
+                    "table_no": c.get("table_no", ""),
+                    "figure_no": c.get("figure_no", ""),
+                })
+            for p in (meta.get("papers") or []):
+                ref_doctype[p.get("ref_num")] = p.get("doctype", "")
         except Exception:
             pass
     md = re.search(r"<!--LITQA_DICT_REFS:([\s\S]*?)-->", full)
     if md:
         try:
             for ref, d in json.loads(md.group(1)).items():
-                ref_ev.setdefault(int(ref), []).append((d.get("quote") or "")[:600])
+                ref_ev.setdefault(int(ref), []).append({
+                    "text": (d.get("quote") or "")[:600], "page": 0,
+                    "block_type": "table", "section_path": "", "table_no": "dict", "figure_no": "",
+                })
         except Exception:
             pass
     if not ref_ev:
@@ -477,17 +603,26 @@ def node_verify_citations(state: EnhancedPipelineState) -> dict:
     verify: dict = {}
     for ref, evs in ref_ev.items():
         sents = ref_sents.get(ref)
-        evs = [e for e in evs if e]
+        evs = [e for e in evs if e.get("text")]
         if not sents or not evs:
             continue
         claim = max(sents, key=len)
         try:
-            ranked = bge_rerank(claim, [(i, e) for i, e in enumerate(evs)])
-            best = max((s for _, s in ranked), default=0.0)
+            ranked = bge_rerank(claim, [(i, e["text"]) for i, e in enumerate(evs)])
+            best_i, best = max(ranked, key=lambda x: x[1]) if ranked else (0, 0.0)
         except Exception as e:
             logger.warning(f"[verify] rerank 失败: {e}")
             continue
-        verify[ref] = {"ok": float(best) >= CITE_VERIFY_MIN, "score": round(float(best), 3)}
+        best_ev = evs[best_i] if best_i < len(evs) else evs[0]
+        verify[ref] = {
+            "ok": float(best) >= CITE_VERIFY_MIN,
+            "score": round(float(best), 3),
+            "confidence": _confidence_label(float(best)),
+            "evidence_type": _evidence_type(best_ev, ref_doctype.get(ref, "")),
+            "page": best_ev.get("page", 0),
+            "snippet": (best_ev.get("text") or "")[:160],
+            "sents": [s for s in dict.fromkeys(sents) if len(s) >= 8][:3],
+        }
 
     if verify:
         logger.info(f"[verify] {sum(1 for v in verify.values() if not v['ok'])}/{len(verify)} 弱支持引用")
@@ -515,8 +650,29 @@ def route_after_supervisor(state: EnhancedPipelineState) -> str:
 
 
 def route_after_structured(state: EnhancedPipelineState) -> str:
-    """新版直接 generate(ESCARGOT 已移除,agent_loop 已覆盖多步推理)。"""
+    """玻尔-A:找文献模式跳过 generate(只回论文列表),其余照常 generate。"""
+    if (state.get("mode") or "qa") == "discovery":
+        return "discovery"
     return "generate"
+
+
+def node_discovery(state: EnhancedPipelineState) -> dict:
+    """找文献模式:不生成长回答,只给一句话引导 + 下方论文列表(LITQA_META 已由检索节点发出)。"""
+    papers = state.get("agent_papers_meta") or []
+    n = len(papers)
+    if not n:
+        return {"output": ["没找到相关文献,换个关键词或放宽约束试试。"]}
+    cons = state.get("constraints") or {}
+    cons_txt = ""
+    if cons.get("year_after"):
+        cons_txt += f" · {cons['year_after']} 年后"
+    if "review" in (cons.get("exclude_doctypes") or []):
+        cons_txt += " · 已排除综述"
+    return {"output": [
+        f"为你找到 **{n} 篇**相关文献(按相关度排序{cons_txt}),见下方列表 —— "
+        f"点卡片看 PDF、☆ 收藏、或导出 BibTeX/RIS。\n\n"
+        f"想要深入分析,切到「智能问答」或「综述」模式再问一次即可。"
+    ]}
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -538,6 +694,7 @@ def build_enhanced_graph() -> StateGraph:
     # 新节点
     g.add_node("fast_summary_retrieve", node_fast_summary_retrieve)
     g.add_node("verify_citations", node_verify_citations)
+    g.add_node("discovery", node_discovery)
 
     # 边
     g.add_edge(START, "supervisor")
@@ -555,9 +712,11 @@ def build_enhanced_graph() -> StateGraph:
     g.add_edge("fast_summary_retrieve", "structured_lookup")
     g.add_conditional_edges("structured_lookup", route_after_structured, {
         "generate": "generate",
+        "discovery": "discovery",
     })
     g.add_edge("generate", "verify_citations")
     g.add_edge("verify_citations", "followup")
+    g.add_edge("discovery", "followup")
     g.add_edge("followup", END)
 
     return g.compile()
@@ -570,11 +729,15 @@ _enhanced_graph = build_enhanced_graph()
 # 对外接口
 # ══════════════════════════════════════════════════════════════════
 
-async def process_question(question: str, history: list | None = None) -> AsyncGenerator[str, None]:
-    """跟 pipeline_graph.process_question 签名一致,加可选 history 参数(用于 query 跨轮补全)。"""
+async def process_question(question: str, history: list | None = None, mode: str = "qa",
+                           focus_paper_id: int = 0) -> AsyncGenerator[str, None]:
+    """签名兼容 pipeline_graph。mode: 玻尔-A 回答模式;focus_paper_id: 精读模式只检索一篇。"""
     initial_state: EnhancedPipelineState = {
         "question": question,
         "history": history or [],
+        "mode": mode or "qa",
+        "constraints": {},
+        "focus_paper_id": int(focus_paper_id or 0),
         "question_type": "",
         "agent_plan": [],
         "agent_plan_idx": 0,

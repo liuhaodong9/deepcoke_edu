@@ -1,0 +1,17 @@
+[Unit]
+Description=DeepCoke frp Server (Tencent Gateway)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/frp
+ExecStart=/opt/frp/frps -c /opt/frp/frps.toml
+Restart=on-failure
+RestartSec=5
+StandardOutput=append:/var/log/deepcoke/frps.log
+StandardError=append:/var/log/deepcoke/frps.err.log
+
+[Install]
+WantedBy=multi-user.target

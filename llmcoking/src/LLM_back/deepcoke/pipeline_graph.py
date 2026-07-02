@@ -6,6 +6,8 @@ Phase 2: Supervisor LLM 智能路由 + 多 agent 串行
 import logging
 import asyncio
 import operator
+import re
+import json as _json   # LITQA_DICT_REFS/META 用;node_structured_lookup 无局部导入,提到模块级兜底
 from typing import Annotated, AsyncGenerator
 from typing_extensions import TypedDict
 
@@ -41,6 +43,8 @@ class PipelineState(TypedDict):
     # RAG 中间结果
     english_queries: list[str]
     key_concepts: list[str]
+    constraints: dict         # ⑩ 多轮约束(year_after / exclude_doctypes),跨轮从 history 重扫累积
+    mode: str                 # 玻尔-A 回答模式: qa/discovery/review/compare
     chunks: list              # RetrievedChunk 列表
     kg_context: str
     structured_evidence: str  # 结构化字典命中（Markdown 表）；未命中为 ""
@@ -407,6 +411,34 @@ def node_simple_chat(state: PipelineState) -> dict:
     return {"output": out}
 
 
+def _extract_constraints(history: list, question: str) -> dict:
+    """⑩ 从多轮历史+当前问题里抽硬约束(year_after / 排除综述)。
+    无状态:每轮重扫所有用户消息累积,故"两轮前说的排除综述"这轮仍生效。
+    保守正则,只在明确表述时触发,避免误伤召回。"""
+    texts = [question or ""]
+    for h in history or []:
+        u = h.get("user_message") or h.get("content") or h.get("text") or ""
+        if u:
+            texts.append(u)
+    blob = " ".join(texts)
+    cons: dict = {}
+
+    # year_after: "2020年以后/之后/后" / "after 2020" / "since 2020"(取最大下限)
+    years = [int(m.group(1)) for m in re.finditer(r"(20\d{2})\s*年?\s*(?:以|之)?后", blob)]
+    years += [int(m.group(1)) for m in re.finditer(r"(?:after|since)\s*(20\d{2})", blob, re.I)]
+    if years:
+        cons["year_after"] = max(years)
+
+    # 排除综述 / 只要实验论文
+    if (re.search(r"排除综述|不要综述|不看综述|去掉综述|exclude\s+review|no\s+reviews?", blob, re.I)
+            or re.search(r"只(?:要|看|保留)\s*(?:原始|实验|原创)\s*(?:论文|文献|研究)"
+                         r"|(?:experimental|original)\s+(?:papers?|studies)\s+only"
+                         r"|only\s+experimental", blob, re.I)):
+        cons["exclude_doctypes"] = ["review"]
+
+    return cons
+
+
 def node_translate(state: PipelineState) -> dict:
     """Node: 关键词提取 + 翻译检索语句。"""
     steps = [{'text': '正在提取关键词并翻译检索语句…', 'done': False, 'pct': 15}]
@@ -429,9 +461,13 @@ def node_translate(state: PipelineState) -> dict:
         )
     else:
         logger.info(f"[translate] queries={english_queries}, concepts={key_concepts}")
+    constraints = _extract_constraints(history, state["question"])
+    if constraints:
+        logger.info(f"[constraints] 多轮约束: {constraints}")
     out_state = {
         "english_queries": english_queries,
         "key_concepts": key_concepts,
+        "constraints": constraints,
         "output": out,
     }
     # 跨轮补全:把 state["question"] 替换成 resolved_question,
@@ -679,6 +715,7 @@ def node_generate(state: PipelineState) -> dict:
         kg_context=state.get("kg_context", ""),
         reasoning_trace=state.get("reasoning_trace", ""),
         structured_evidence=structured_evidence,
+        mode=state.get("mode", "qa"),
     ):
         _fix_buf += piece
         if len(_fix_buf) > _BUF_TAIL:
@@ -795,17 +832,18 @@ _graph = build_graph()
 # 对外接口（保持与旧 pipeline.py 完全相同的签名）
 # ══════════════════════════════════════════════════════════════════
 
-async def process_question(question: str, history: list | None = None) -> AsyncGenerator[str, None]:
+async def process_question(question: str, history: list | None = None, mode: str = "qa") -> AsyncGenerator[str, None]:
     """
     LangGraph 版 pipeline 入口。
     Args:
         question: 用户当前问题
-        history: 多轮对话历史(可选,用于 query 跨轮补全),格式:
-                 [{"user_message": "...", "bot_response": "..."}],按时间顺序
+        history: 多轮对话历史(可选,用于 query 跨轮补全)
+        mode: 玻尔-A 回答模式(qa/discovery/review/compare)
     """
     initial_state: PipelineState = {
         "question": question,
         "history": history or [],
+        "mode": mode or "qa",
         "question_type": "",
         "agent_plan": [],
         "agent_plan_idx": 0,
@@ -838,32 +876,37 @@ async def process_question(question: str, history: list | None = None) -> AsyncG
 # ══════════════════════════════════════════════════════════════════
 
 def _build_thinking_block(question_type, chunks, kg_context, reasoning_trace):
-    """构建推理过程展示块（与旧版一致）。"""
-    lines = ["> **推理过程**", ">"]
+    """构建推理过程展示块:可折叠 <details>(纯 HTML,渲染干净,不再用 markdown 引用避免裸 >)。"""
+    import html as _html
     type_labels = {
         "factual": "事实查询", "process": "工艺流程",
         "comparison": "对比分析", "causal": "因果推理",
         "recommendation": "方案推荐",
     }
-    lines.append(f"> **问题类型：** {type_labels.get(question_type, question_type)}")
-    lines.append(">")
-    if chunks:
-        lines.append(f"> **检索到 {len(chunks)} 条相关文献片段：**")
-        for i, c in enumerate(chunks[:5], 1):
+    parts = [f"<b>问题类型:</b> {type_labels.get(question_type, question_type)}"]
+
+    # 跳过合成的 Fulltext Evidence Pack 占位(section=FulltextEvidence / chunk_index=-4),
+    # 它不是真 chunk,否则会显示 "[1] Fulltext Evidence Pack (?)" 这种没意义的行
+    real = [c for c in (chunks or [])
+            if getattr(c, "section", "") != "FulltextEvidence" and getattr(c, "chunk_index", 0) != -4]
+    if real:
+        lis = []
+        for i, c in enumerate(real[:5], 1):
             score_pct = f"{c.score:.0%}" if c.score <= 1 else f"{c.score:.2f}"
-            lines.append(f"> - [{i}] {c.title[:60]} ({c.year or '?'}) -- 相关度 {score_pct}")
-        if len(chunks) > 5:
-            lines.append(f"> - ... 及其他 {len(chunks) - 5} 条")
-        lines.append(">")
+            title = _html.escape((c.title or "")[:60])
+            lis.append(f"<li>[{i}] {title} ({c.year or '?'}) — 相关度 {score_pct}</li>")
+        if len(real) > 5:
+            lis.append(f"<li>… 及其他 {len(real) - 5} 条</li>")
+        parts.append(f"<b>检索到 {len(real)} 条相关文献片段:</b><ul>{''.join(lis)}</ul>")
     if kg_context:
-        lines.append("> **知识图谱关联：**")
-        for kg_line in kg_context.split("\n"):
-            lines.append(f"> {kg_line}")
-        lines.append(">")
+        parts.append("<b>知识图谱关联:</b><br>" + _html.escape(kg_context).replace("\n", "<br>"))
     if reasoning_trace:
-        lines.append("> **深度推理 (ESCARGOT)：**")
-        for rt_line in reasoning_trace.split("\n"):
-            lines.append(f"> {rt_line}")
-        lines.append(">")
-    lines.append("\n---\n\n")
-    return "\n".join(lines)
+        parts.append("<b>深度推理 (ESCARGOT):</b><br>" + _html.escape(reasoning_trace).replace("\n", "<br>"))
+
+    body = "<br>".join(parts)
+    return (
+        '<details class="deep-think">\n'
+        '<summary>💭 推理过程</summary>\n'
+        f'<div class="deep-think-body">{body}</div>\n'
+        '</details>\n\n'
+    )

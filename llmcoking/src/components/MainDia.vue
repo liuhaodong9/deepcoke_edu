@@ -54,6 +54,77 @@
                 {{ message.litqa.chunks.length }} 段
                 <span class="litqa-hint">· 点节点查看 PDF</span>
               </div>
+              <div v-if="activeConstraints(message)" class="litqa-constraints">
+                <span class="litqa-constraints-icon">⛃</span>
+                已按你的追问过滤：{{ activeConstraints(message) }}
+              </div>
+              <!-- 来源工具条:导出引用 -->
+              <div
+                v-if="message.litqa.papers && citedPapers(message.litqa.papers).length"
+                class="litqa-toolbar"
+              >
+                <span class="litqa-toolbar-label">引用 {{ citedPapers(message.litqa.papers).length }} 篇</span>
+                <button class="litqa-export-btn" @click="openFavDrawer">★ 我的收藏</button>
+                <button class="litqa-export-btn" @click="exportCitations(message, 'bibtex')">⬇ BibTeX</button>
+                <button class="litqa-export-btn" @click="exportCitations(message, 'ris')">⬇ RIS</button>
+              </div>
+              <!-- 来源面板:引用文献列表(类型徽章 + 年份/期刊,点击看 PDF) -->
+              <div
+                v-if="message.litqa.papers && message.litqa.papers.length"
+                class="litqa-papers"
+              >
+                <div
+                  v-for="p in citedPapers(message.litqa.papers)"
+                  :key="p.paper_id"
+                  class="litqa-paper"
+                  @click="openPdfPreview(p, (message.litqa.chunks || []).find(c => c.paper_id === p.paper_id) || null)"
+                >
+                  <div class="litqa-paper-head">
+                    <span v-if="p.ref_num" class="litqa-paper-ref">[{{ p.ref_num }}]</span>
+                    <span class="litqa-doctype" :class="'dt-' + (p.doctype || 'research')">{{ doctypeLabel(p.doctype) }}</span>
+                    <span class="litqa-paper-title">{{ p.title || ('Paper ' + p.paper_id) }}</span>
+                    <span
+                      class="litqa-fav"
+                      :class="{ on: isFavorited(p.paper_id) }"
+                      :title="isFavorited(p.paper_id) ? '取消收藏' : '收藏'"
+                      @click.stop="toggleFavorite(p)"
+                    >{{ isFavorited(p.paper_id) ? '★' : '☆' }}</span>
+                  </div>
+                  <div class="litqa-paper-meta">
+                    <span v-if="p.year">{{ p.year }}</span>
+                    <span v-if="p.journal" class="litqa-journal">{{ p.journal }}</span>
+                    <span v-if="p.category" class="litqa-category">{{ p.category }}</span>
+                  </div>
+                  <div v-if="supportSents(message, p)" class="litqa-support">
+                    <span class="litqa-support-label">支持的回答句</span>
+                    <div
+                      v-for="(s, si) in supportSents(message, p)"
+                      :key="si"
+                      class="litqa-support-sent"
+                    >“{{ s }}”</div>
+                  </div>
+                  <div class="litqa-similar-bar">
+                    <span class="litqa-similar-toggle" @click.stop="toggleSimilar(p.paper_id)">
+                      🔗 相似论文 {{ similarOpen[p.paper_id] ? '▾' : '▸' }}
+                    </span>
+                  </div>
+                  <div v-if="similarOpen[p.paper_id]" class="litqa-similar-list" @click.stop>
+                    <div v-if="!(similarCache[p.paper_id] || []).length" class="litqa-similar-empty">
+                      {{ similarCache[p.paper_id] ? '暂无相似文献' : '加载中…' }}
+                    </div>
+                    <div
+                      v-for="sp in (similarCache[p.paper_id] || [])"
+                      :key="sp.paper_id"
+                      class="litqa-similar-item"
+                      @click.stop="openPdfPreview({ paper_id: sp.paper_id, title: sp.title }, null)"
+                    >
+                      <span class="litqa-similar-score">{{ Math.round(sp.score * 100) }}%</span>
+                      <span class="litqa-similar-title">{{ sp.title || ('Paper ' + sp.paper_id) }}</span>
+                      <span v-if="sp.year" class="litqa-similar-year">{{ sp.year }}</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
               <div
                 class="litqa-graph"
                 :id="'litqa-graph-' + message.id"
@@ -85,6 +156,17 @@
 
     <!-- 输入区域 -->
     <div class="input-area">
+      <!-- 玻尔-A:回答模式选择器 -->
+      <div class="mode-tabs">
+        <button
+          v-for="m in chatModes"
+          :key="m.key"
+          class="mode-tab"
+          :class="{ active: chatMode === m.key }"
+          :title="m.tip"
+          @click="chatMode = m.key"
+        >{{ m.label }}</button>
+      </div>
       <div class="input-wrapper">
         <!-- 隐藏文件选择器 -->
         <input
@@ -181,6 +263,64 @@
         </div>
       </div>
     </transition>
+
+    <!-- ⑫ 我的收藏抽屉 -->
+    <transition name="fav-fade">
+      <div v-if="showFavDrawer" class="fav-mask" @click.self="showFavDrawer = false">
+        <div class="fav-drawer">
+          <div class="fav-drawer-head">
+            <span>★ 我的收藏 ({{ favList.length }})</span>
+            <span class="fav-close" @click="showFavDrawer = false">✕</span>
+          </div>
+          <div v-if="!favList.length" class="fav-empty">还没有收藏文献。点论文卡上的 ☆ 收藏。</div>
+          <div v-else class="fav-list">
+            <div v-for="f in favList" :key="f.paper_id" class="fav-item">
+              <div class="fav-item-main" @click="openPdfPreview({ paper_id: f.paper_id, title: f.title }, null)">
+                <div class="fav-item-title">{{ f.title || ('Paper ' + f.paper_id) }}</div>
+                <div class="fav-item-meta">{{ f.authors || '' }}{{ f.year ? ' · ' + f.year : '' }}</div>
+              </div>
+              <span class="fav-item-del" title="取消收藏" @click="removeFavorite(f.paper_id)">✕</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </transition>
+
+    <!-- 句子级证据链:点 [N] 弹的结构化证据卡 -->
+    <div v-if="evidenceCard.show" class="ev-mask" @click="closeEvidenceCard">
+      <div
+        class="ev-card"
+        :style="{ left: evidenceCard.x + 'px', top: evidenceCard.y + 'px' }"
+        @click.stop
+      >
+        <span class="ev-close" @click="closeEvidenceCard">✕</span>
+        <div v-if="evidenceCard.claim" class="ev-claim">{{ evidenceCard.claim }}</div>
+        <div class="ev-row">
+          <span class="ev-k">来源</span>
+          <span class="ev-v">{{ evidenceCard.paper.title || ('Paper ' + evidenceCard.paper.paper_id) }}<em v-if="evidenceCard.paper.year"> ({{ evidenceCard.paper.year }})</em></span>
+        </div>
+        <div v-if="evidenceCard.v" class="ev-row">
+          <span class="ev-k">证据类型</span>
+          <span class="ev-v">{{ evidenceCard.v.evidence_type || '正文' }}</span>
+        </div>
+        <div v-if="evidenceCard.v && evidenceCard.v.page" class="ev-row">
+          <span class="ev-k">页码</span>
+          <span class="ev-v">第 {{ evidenceCard.v.page }} 页</span>
+        </div>
+        <div v-if="evidenceCard.v" class="ev-row">
+          <span class="ev-k">置信度</span>
+          <span
+            class="ev-v ev-conf"
+            :class="{ 'conf-high': evidenceCard.v.confidence === '高', 'conf-mid': evidenceCard.v.confidence === '中', 'conf-low': evidenceCard.v.confidence === '低' }"
+          >{{ evidenceCard.v.confidence }}（{{ evidenceCard.v.score }}）</span>
+        </div>
+        <div v-else class="ev-row">
+          <span class="ev-k">置信度</span><span class="ev-v">未核验</span>
+        </div>
+        <div v-if="evidenceCard.v && evidenceCard.v.snippet" class="ev-snippet">“{{ evidenceCard.v.snippet }}”</div>
+        <button class="ev-pdf-btn" @click="evidenceViewPdf">查看 PDF 原文 →</button>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -203,6 +343,23 @@ export default {
     return {
       messages: [],
       newMessage: '',
+      // ⑫ 收藏:已收藏 paper_id 集合 + 抽屉
+      favIds: [],
+      favList: [],
+      showFavDrawer: false,
+      // 玻尔-A:回答模式
+      chatMode: 'qa',
+      chatModes: [
+        { key: 'qa', label: '智能问答', tip: '默认:综合多篇文献生成回答' },
+        { key: 'discovery', label: '找文献', tip: '只返回相关论文列表,不生成长文' },
+        { key: 'review', label: '综述', tip: '结构化综述:背景/机制/方法/趋势' },
+        { key: 'compare', label: '对比', tip: '逐篇横向对比表' }
+      ],
+      // 相似论文推荐(语义最近邻)
+      similarCache: {},
+      similarOpen: {},
+      // 句子级证据链:点 [N] 弹的证据卡
+      evidenceCard: { show: false, x: 0, y: 0, paper: null, v: null, claim: '', chunk: null },
       // baseURL 走相对路径（dev: vue.config.js proxy，prod: nginx 反代）
       // PDF iframe/直链用 apiUrlWithToken('/papers/X/pdf') 拼带 token 的 URL
       previewPaper: null,
@@ -259,10 +416,19 @@ export default {
         if (!message || !message.litqa) return
         const paper = (message.litqa.papers || []).find(p => p.paper_id === paperId)
         if (!paper) return
-        // 选支撑该 [N] 那句话的 chunk(中文 claim 里的数字+英文术语跨语言锚定;
-        // 无可锚定时退回该 paper score 最高的 chunk)
+        // 句子级证据链:点 [N] 先弹结构化证据卡(结论/来源/类型/页码/置信度),卡里再「查看原文」
+        const v = (message.litqaCiteVerify || {})[paper.ref_num] || null
+        const claim = this._claimTextAround(a) || (v && v.sents && v.sents[0]) || ''
         const chunk = this.pickSupportingChunk(message, paperId, a)
-        this.openPdfPreview(paper, chunk)
+        this.evidenceCard = {
+          show: true,
+          x: Math.min(e.clientX, window.innerWidth - 360),
+          y: Math.min(e.clientY + 14, window.innerHeight - 300),
+          paper,
+          v,
+          claim,
+          chunk
+        }
         return
       }
 
@@ -279,6 +445,148 @@ export default {
     },
     // ② 引用溯源:在该 paper 的 chunks 里挑最支撑"[N] 所在句子"的那段
     // (答案中文、chunk 英文 → 用句中的数字 + 英文术语做跨语言锚点;命中不到退回 top-1)
+    citedPapers (papers) {
+      // 来源列表:被引用的文献,按引用编号排序
+      return (papers || [])
+        .filter(p => p && p.cited !== false)
+        .slice()
+        .sort((a, b) => (a.ref_num || 999) - (b.ref_num || 999))
+    },
+    doctypeLabel (dt) {
+      return { research: '实验研究', review: '综述', corrigendum: '勘误', editorial: '社论' }[dt] || '研究'
+    },
+    supportSents (message, p) {
+      // ⑤ 该篇论文支撑的回答句(来自 citation verifier)
+      const v = message.litqaCiteVerify && message.litqaCiteVerify[p.ref_num]
+      return (v && v.sents && v.sents.length) ? v.sents : null
+    },
+    _citationKey (p, i) {
+      // BibTeX key: 第一作者姓 + 年份,缺则 paperN
+      const first = (p.authors || '').split(/[,;]/)[0].trim().split(/\s+/).pop() || ''
+      const surname = first.replace(/[^A-Za-z一-龥]/g, '')
+      return (surname ? surname.toLowerCase() : 'paper') + (p.year || (i + 1))
+    },
+    exportCitations (message, fmt) {
+      // ⑫ 导出引用:从已引用文献生成 BibTeX/RIS(数据用 litqa.papers,无 journal/doi)
+      const papers = this.citedPapers(message.litqa.papers)
+      if (!papers.length) return
+      let text = ''
+      papers.forEach((p, i) => {
+        const title = (p.title || `Paper ${p.paper_id}`).replace(/[{}]/g, '')
+        const authors = p.authors || ''
+        const year = p.year || ''
+        if (fmt === 'bibtex') {
+          text += `@article{${this._citationKey(p, i)},\n`
+          text += `  title = {${title}},\n`
+          if (authors) text += `  author = {${authors}},\n`
+          if (year) text += `  year = {${year}},\n`
+          text += '}\n\n'
+        } else {
+          text += 'TY  - JOUR\n'
+          text += `TI  - ${title}\n`
+          authors.split(/[,;]/).map(a => a.trim()).filter(Boolean).forEach(a => { text += `AU  - ${a}\n` })
+          if (year) text += `PY  - ${year}\n`
+          text += 'ER  - \n\n'
+        }
+      })
+      const ext = fmt === 'bibtex' ? 'bib' : 'ris'
+      const blob = new Blob([text], { type: 'text/plain;charset=utf-8' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `references.${ext}`
+      a.click()
+      URL.revokeObjectURL(url)
+      this.$message && this.$message.success(`已导出 ${papers.length} 篇引用 (${ext})`)
+    },
+    _favUser () {
+      return window.sessionStorage.getItem('username') || 'user123'
+    },
+    async loadFavorites () {
+      // ⑫ 拉取当前用户收藏,填 favIds/favList
+      try {
+        const r = await apiFetch(`/favorites/?user_id=${encodeURIComponent(this._favUser())}`)
+        if (!r.ok) return
+        const list = await r.json()
+        this.favList = list
+        this.favIds = list.map(f => f.paper_id)
+      } catch (e) { /* 静默:收藏不可用不影响主流程 */ }
+    },
+    isFavorited (pid) {
+      return this.favIds.includes(pid)
+    },
+    async toggleFavorite (p) {
+      const pid = p.paper_id
+      if (this.isFavorited(pid)) {
+        await this.removeFavorite(pid)
+      } else {
+        try {
+          const r = await apiFetch('/favorites/', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              user_id: this._favUser(),
+              paper_id: pid,
+              title: p.title || '',
+              authors: p.authors || '',
+              year: p.year || null
+            })
+          })
+          if (r.ok) {
+            if (!this.favIds.includes(pid)) this.favIds.push(pid)
+            this.favList.unshift({ paper_id: pid, title: p.title, authors: p.authors, year: p.year })
+            this.$message && this.$message.success('已收藏')
+          }
+        } catch (e) {
+          this.$message && this.$message.error('收藏失败')
+        }
+      }
+    },
+    async removeFavorite (pid) {
+      try {
+        const r = await apiFetch(
+          `/favorites/?user_id=${encodeURIComponent(this._favUser())}&paper_id=${pid}`,
+          { method: 'DELETE' })
+        if (r.ok) {
+          this.favIds = this.favIds.filter(x => x !== pid)
+          this.favList = this.favList.filter(f => f.paper_id !== pid)
+        }
+      } catch (e) { /* 忽略 */ }
+    },
+    openFavDrawer () {
+      this.loadFavorites()
+      this.showFavDrawer = true
+    },
+    closeEvidenceCard () {
+      this.evidenceCard.show = false
+    },
+    evidenceViewPdf () {
+      const c = this.evidenceCard
+      if (c.paper) this.openPdfPreview(c.paper, c.chunk || { text: c.claim })
+      this.closeEvidenceCard()
+    },
+    async toggleSimilar (pid) {
+      // 相似论文:展开时按需拉取语义最近邻
+      this.$set(this.similarOpen, pid, !this.similarOpen[pid])
+      if (this.similarOpen[pid] && this.similarCache[pid] === undefined) {
+        try {
+          const r = await apiFetch(`/papers/${pid}/similar?k=6`)
+          const data = r.ok ? await r.json() : { similar: [] }
+          this.$set(this.similarCache, pid, data.similar || [])
+        } catch (e) {
+          this.$set(this.similarCache, pid, [])
+        }
+      }
+    },
+    activeConstraints (message) {
+      // ⑩ 多轮约束:把生效的过滤条件转成中文标签
+      const c = message.litqa && message.litqa.constraints
+      if (!c) return ''
+      const parts = []
+      if (c.year_after) parts.push(`${c.year_after} 年后`)
+      if (c.exclude_doctypes && c.exclude_doctypes.includes('review')) parts.push('排除综述')
+      return parts.join(' · ')
+    },
     pickSupportingChunk (message, paperId, anchorEl) {
       const chunks = (message.litqa.chunks || []).filter(c => c.paper_id === paperId)
       if (chunks.length <= 1) return chunks[0] || null
@@ -825,7 +1133,7 @@ export default {
 
       try {
         const response = await apiFetch(
-          `/chat/?session_id=${sessionToUse}&user_message=${encodeURIComponent(userText)}`,
+          `/chat/?session_id=${sessionToUse}&user_message=${encodeURIComponent(userText)}&mode=${this.chatMode}`,
           { method: 'POST' }
         )
         const reader = response.body.getReader()
@@ -909,6 +1217,39 @@ export default {
       this.attachments = []
       this.scrollToBottom()
     },
+    parseLitqaMarkers (msg, rawText) {
+      // 从存档文本里解析并剥离 LITQA_* 标记(流式生成时实时做的那套,历史加载也要做一遍,
+      // 否则标记泄漏成正文、[N] 引用无 litqa 映射点不动)。
+      let text = rawText || ''
+      const META = /<!--LITQA_META:([\s\S]*?)-->\s*/
+      const DICT = /<!--LITQA_DICT_REFS:([\s\S]*?)-->\s*/
+      const VERIFY = /<!--LITQA_CITE_VERIFY:([\s\S]*?)-->\s*/
+      const mm = text.match(META)
+      if (mm) {
+        try { this.$set(msg, 'litqa', JSON.parse(mm[1])) } catch (e) { /* 损坏的元数据忽略 */ }
+        text = text.replace(META, '')
+      }
+      const md = text.match(DICT)
+      if (md) {
+        try { this.$set(msg, 'litqaDictRefs', JSON.parse(md[1])) } catch (e) { /* 忽略 */ }
+        text = text.replace(DICT, '')
+      }
+      const mv = text.match(VERIFY)
+      if (mv) {
+        try { this.$set(msg, 'litqaCiteVerify', JSON.parse(mv[1])) } catch (e) { /* 忽略 */ }
+        text = text.replace(VERIFY, '')
+      }
+      // 兜底:删掉任何残留的 LITQA_* 注释,绝不让它泄漏成正文
+      text = text.replace(/<!--LITQA_[\s\S]*?-->\s*/g, '')
+      // 旧格式 thinking 块(markdown 引用 > 推理过程 … ---);新版已改 <details>,历史里的旧块剥掉
+      text = text.replace(/(?:^|\n)>[^\n]*推理过程[\s\S]*?\n---\n+/g, '\n')
+      // 历史对话已完成:把还在转圈的 pending 步骤转成 done(✅),保留对勾、只停转圈
+      text = text.replace(
+        /<div class="progress-step pending">([^<]*)<\/div>/g,
+        '<div class="progress-step done">✅ $1</div>'
+      )
+      return text
+    },
     async loadChatHistory () {
       if (!this.sessionId) return
       try {
@@ -916,10 +1257,18 @@ export default {
         const data = await response.json()
         this.messages = data
           .filter(msg => msg.type !== 'user' || msg.text.trim() !== '')
-          .map(msg => ({ text: msg.text, type: msg.type }))
+          .map(msg => {
+            const m = { text: msg.text, type: msg.type, id: nextMsgId() }
+            if (msg.type === 'bot') m.text = this.parseLitqaMarkers(m, msg.text)
+            return m
+          })
         if (this.sessionId === 'new') {
           this.streamWelcomeMessage()
         }
+        // 历史里有文献元数据的消息,DOM 渲染后补挂知识图谱
+        this.$nextTick(() => {
+          this.messages.forEach(m => { if (m.litqa) this.mountLitqaGraph(m) })
+        })
         this.scrollToBottom()
       } catch (error) {
         console.error('加载聊天记录失败:', error)
@@ -951,6 +1300,8 @@ export default {
     }
   },
   mounted () {
+    // ⑫ 预加载收藏,让论文卡星标即时反映状态
+    this.loadFavorites()
     // 文献引用 [n] 点击 → 高亮对应文献卡片(全局事件委托)
     this.$nextTick(() => {
       const el = this.$refs.chatScroll
@@ -1152,6 +1503,317 @@ export default {
   border-radius: 6px;
   transition: border-color 0.18s, box-shadow 0.18s, background 0.4s;
   position: relative;
+  cursor: pointer;
+}
+.litqa-paper-ref {
+  flex-shrink: 0;
+  font-weight: 700;
+  color: #4a90e2;
+  font-size: 12px;
+}
+.litqa-doctype {
+  flex-shrink: 0;
+  font-size: 10.5px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 3px;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+.litqa-doctype.dt-research {
+  background: #e7f3ea;
+  color: #2e7d44;
+}
+.litqa-doctype.dt-review {
+  background: #eef0fb;
+  color: #4a55c7;
+}
+.litqa-doctype.dt-corrigendum,
+.litqa-doctype.dt-editorial {
+  background: #fdecec;
+  color: #c0392b;
+}
+.litqa-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 4px 0 8px;
+}
+.litqa-toolbar-label {
+  font-size: 12px;
+  color: #8a96a6;
+  margin-right: auto;
+}
+.litqa-export-btn {
+  font-size: 11.5px;
+  padding: 3px 10px;
+  border: 1px solid #b6cce4;
+  border-radius: 5px;
+  background: #f0f7ff;
+  color: #2f6fb3;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.litqa-export-btn:hover {
+  background: #e0eefb;
+}
+.litqa-fav {
+  flex-shrink: 0;
+  cursor: pointer;
+  font-size: 15px;
+  color: #c2cdda;
+  line-height: 1;
+  transition: color 0.15s, transform 0.15s;
+}
+.litqa-fav:hover {
+  transform: scale(1.2);
+}
+.litqa-fav.on {
+  color: #f5b301;
+}
+/* ⑫ 收藏抽屉 */
+.fav-mask {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.35);
+  z-index: 3000;
+  display: flex;
+  justify-content: flex-end;
+}
+.fav-drawer {
+  width: 380px;
+  max-width: 86vw;
+  height: 100%;
+  background: #fff;
+  box-shadow: -2px 0 16px rgba(0, 0, 0, 0.18);
+  display: flex;
+  flex-direction: column;
+}
+.fav-drawer-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 14px 18px;
+  font-weight: 600;
+  color: #1a3556;
+  border-bottom: 1px solid #eef2f7;
+}
+.fav-close {
+  cursor: pointer;
+  color: #8a96a6;
+  font-size: 16px;
+}
+.fav-empty {
+  padding: 30px 18px;
+  color: #8a96a6;
+  font-size: 13px;
+  text-align: center;
+}
+.fav-list {
+  overflow-y: auto;
+  padding: 8px 12px;
+}
+.fav-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px;
+  border-bottom: 1px solid #f2f5f9;
+}
+.fav-item-main {
+  flex: 1;
+  cursor: pointer;
+}
+.fav-item-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #1a3556;
+  line-height: 1.4;
+}
+.fav-item-main:hover .fav-item-title {
+  color: #2f6fb3;
+}
+.fav-item-meta {
+  font-size: 11.5px;
+  color: #8a96a6;
+  margin-top: 3px;
+}
+.fav-item-del {
+  cursor: pointer;
+  color: #c2cdda;
+  font-size: 13px;
+  flex-shrink: 0;
+}
+.fav-item-del:hover {
+  color: #e05656;
+}
+/* 句子级证据链卡片 */
+.ev-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 3200;
+}
+.ev-card {
+  position: fixed;
+  width: 340px;
+  max-width: 88vw;
+  background: #fff;
+  border: 1px solid #dbe5f0;
+  border-radius: 10px;
+  box-shadow: 0 8px 28px rgba(20, 50, 90, 0.22);
+  padding: 14px 16px 16px;
+  font-size: 13px;
+  color: #2a3a4d;
+}
+.ev-close {
+  position: absolute;
+  top: 8px;
+  right: 10px;
+  cursor: pointer;
+  color: #9aa7b4;
+  font-size: 14px;
+}
+.ev-claim {
+  font-weight: 600;
+  color: #16243a;
+  line-height: 1.45;
+  margin: 2px 18px 10px 0;
+}
+.ev-row {
+  display: flex;
+  gap: 8px;
+  margin: 5px 0;
+  line-height: 1.4;
+}
+.ev-k {
+  flex-shrink: 0;
+  width: 52px;
+  color: #8a96a6;
+  font-size: 12px;
+}
+.ev-v {
+  flex: 1;
+  color: #3a4d63;
+}
+.ev-conf {
+  font-weight: 700;
+}
+.ev-conf.conf-high { color: #2e7d44; }
+.ev-conf.conf-mid { color: #c77f12; }
+.ev-conf.conf-low { color: #c0392b; }
+.ev-snippet {
+  margin: 8px 0 4px;
+  padding: 7px 10px;
+  background: #f4f8fc;
+  border-left: 2px solid #b6d2ee;
+  color: #44597a;
+  font-size: 12px;
+  line-height: 1.5;
+  max-height: 96px;
+  overflow-y: auto;
+}
+.ev-pdf-btn {
+  margin-top: 10px;
+  width: 100%;
+  padding: 7px 0;
+  border: none;
+  border-radius: 6px;
+  background: #2f6fb3;
+  color: #fff;
+  font-size: 12.5px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.ev-pdf-btn:hover {
+  background: #245a93;
+}
+.fav-fade-enter-active,
+.fav-fade-leave-active {
+  transition: opacity 0.2s;
+}
+.fav-fade-enter,
+.fav-fade-leave-to {
+  opacity: 0;
+}
+.litqa-constraints {
+  margin: 6px 0 8px;
+  padding: 5px 10px;
+  background: #eef6ee;
+  border: 1px solid #cfe6cf;
+  border-radius: 6px;
+  font-size: 12px;
+  color: #3a7d44;
+}
+.litqa-constraints-icon {
+  margin-right: 4px;
+}
+.litqa-support {
+  margin-top: 5px;
+  padding-top: 5px;
+  border-top: 1px dashed #e2eaf3;
+}
+.litqa-similar-bar {
+  margin-top: 5px;
+}
+.litqa-similar-toggle {
+  font-size: 11.5px;
+  color: #4a90e2;
+  cursor: pointer;
+  user-select: none;
+}
+.litqa-similar-toggle:hover {
+  text-decoration: underline;
+}
+.litqa-similar-list {
+  margin-top: 4px;
+  padding-left: 6px;
+  border-left: 2px solid #d6e4f2;
+}
+.litqa-similar-empty {
+  font-size: 11.5px;
+  color: #9aa7b4;
+  padding: 3px 0;
+}
+.litqa-similar-item {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 3px 0;
+  cursor: pointer;
+}
+.litqa-similar-item:hover .litqa-similar-title {
+  color: #2f6fb3;
+}
+.litqa-similar-score {
+  flex-shrink: 0;
+  font-size: 10.5px;
+  font-weight: 600;
+  color: #3a7d44;
+}
+.litqa-similar-title {
+  flex: 1;
+  font-size: 11.5px;
+  color: #41597a;
+  line-height: 1.35;
+}
+.litqa-similar-year {
+  flex-shrink: 0;
+  font-size: 10.5px;
+  color: #9aa7b4;
+}
+.litqa-support-label {
+  display: block;
+  font-size: 10.5px;
+  color: #8a96a6;
+  margin-bottom: 2px;
+}
+.litqa-support-sent {
+  font-size: 11.5px;
+  color: #41597a;
+  line-height: 1.45;
+  padding-left: 7px;
+  border-left: 2px solid #b6d2ee;
+  margin-bottom: 3px;
 }
 .litqa-paper:hover {
   border-color: #b6cce4;
@@ -1680,6 +2342,14 @@ export default {
   font-size: 13px;
   color: #9a9a9a;
 }
+::v-deep .message-bubble .deep-think-body {
+  font-size: 13px;
+  color: #9a9a9a;
+  line-height: 1.65;
+}
+::v-deep .message-bubble .deep-think-body ul {
+  margin: 4px 0;
+}
 
 /* ===== 加载动画 ===== */
 .loading-dots {
@@ -1703,6 +2373,47 @@ export default {
 @keyframes dots {
   0%, 80%, 100% { opacity: 0.3; transform: scale(0.8); }
   40% { opacity: 1; transform: scale(1); }
+}
+
+/* ===== 玻尔-A 回答模式选择器 ===== */
+.mode-tabs {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 8px;
+  padding-left: 2px;
+}
+.mode-tab {
+  font-size: 12.5px;
+  padding: 4px 14px;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: transparent;
+  color: #9aa7b4;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.mode-tab:hover {
+  color: #d4d4d4;
+  border-color: rgba(255, 255, 255, 0.28);
+}
+.mode-tab.active {
+  background: rgba(20, 158, 250, 0.16);
+  border-color: #2f8fe0;
+  color: #7ec1ff;
+  font-weight: 600;
+}
+[data-theme="light"] .mode-tab {
+  border-color: #d3deea;
+  color: #6b7c93;
+}
+[data-theme="light"] .mode-tab:hover {
+  color: #1a2b3c;
+  border-color: #b6cce4;
+}
+[data-theme="light"] .mode-tab.active {
+  background: #e7f1fb;
+  border-color: #4a90e2;
+  color: #2f6fb3;
 }
 
 /* ===== 输入区域 ===== */
@@ -1844,6 +2555,18 @@ export default {
 }
 [data-theme="light"] .message-row.bot .message-bubble {
   color: #1a202c;
+}
+/* 白天:正文标题/粗体/引用块改深色,否则白底白字看不见 */
+[data-theme="light"] .message-bubble ::v-deep h1,
+[data-theme="light"] .message-bubble ::v-deep h2,
+[data-theme="light"] .message-bubble ::v-deep h3,
+[data-theme="light"] .message-bubble ::v-deep strong,
+[data-theme="light"] .message-bubble ::v-deep b {
+  color: #16243a;
+}
+[data-theme="light"] .message-bubble ::v-deep blockquote {
+  color: #44546a;
+  border-left-color: #ccd6e2;
 }
 [data-theme="light"] .message-row.user .message-bubble {
   background: #d6e9ff;

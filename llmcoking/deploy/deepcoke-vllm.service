@@ -1,0 +1,37 @@
+[Unit]
+Description=DeepCoke vLLM LLM Service (Qwen3-72B-Int4 on 4x3090)
+After=network-online.target
+
+[Service]
+Type=simple
+User=dbcloud
+Group=dbcloud
+WorkingDirectory=/home/dbcloud
+# CUDA 设备（4x3090 用全部 0-3）
+Environment=CUDA_VISIBLE_DEVICES=0,1,2,3
+# HF 镜像加速（首次下模型用）
+Environment=HF_ENDPOINT=https://hf-mirror.com
+Environment=HF_HOME=/home/dbcloud/.cache/huggingface
+# vLLM 启动参数：
+# - --model: 选 AWQ Int4 量化版（约 35GB），4 卡 tensor parallel
+# - --port 11434: 兼容现有 Ollama 端口，DeepSeek_BASE_URL 不用改
+# - --max-model-len: 32768 给抽取/长上下文用
+# - --gpu-memory-utilization 0.9: 单卡 16GB 不要爆
+ExecStart=/home/dbcloud/anaconda3/envs/vllm/bin/vllm serve \
+    Qwen/Qwen2.5-72B-Instruct-AWQ \
+    --tensor-parallel-size 4 \
+    --port 11434 \
+    --host 127.0.0.1 \
+    --max-model-len 32768 \
+    --gpu-memory-utilization 0.90 \
+    --served-model-name qwen3:8b
+# served-model-name 设成 qwen3:8b 保持跟 config.py 的 DEEPSEEK_MODEL 一致，
+# 这样切换 vLLM 时 config 完全不用改
+Restart=on-failure
+RestartSec=20
+TimeoutStartSec=600
+StandardOutput=append:/var/log/deepcoke/vllm.log
+StandardError=append:/var/log/deepcoke/vllm.err.log
+
+[Install]
+WantedBy=multi-user.target

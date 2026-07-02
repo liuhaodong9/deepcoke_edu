@@ -1,0 +1,19 @@
+[Unit]
+Description=DeepCoke Voice Backend (FastAPI WebSocket)
+After=network-online.target deepcoke-vllm.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=dbcloud
+Group=dbcloud
+WorkingDirectory=/home/dbcloud/deepcoke_edu/llmcoking/voice_agent_backend
+EnvironmentFile=/home/dbcloud/deepcoke_edu/llmcoking/deploy/deepcoke.env
+ExecStart=/home/dbcloud/anaconda3/envs/deepcoke/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8001 --workers 1
+Restart=on-failure
+RestartSec=5
+StandardOutput=append:/var/log/deepcoke/voice.log
+StandardError=append:/var/log/deepcoke/voice.err.log
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,32 @@
+# frp 服务端配置 — 跑在腾讯云入口机 106.52.177.125
+# 接收 dbcloud 物理机 frpc 主动连入，把后端 8000/8001 暴露到本地 28000/28001
+# 然后 nginx 把公网 80 的请求反代到这两个本地端口
+#
+# 部署位置: /opt/frp/frps.toml
+# 启动:     systemctl start deepcoke-frps  （由 install_tencent.sh 自动配好）
+
+# frpc 连接进来的端口
+bindPort = 7000
+
+# 鉴权：dbcloud 那边的 frpc.toml 必须用同样的 token 才能接入
+auth.method = "token"
+auth.token = "Dc_3jK9pQrL5xN7vM2hY8zT4wU6sE1aB"
+
+# 仅允许暴露的端口段（防止 frpc 被盗用映射 22 等敏感端口）
+allowPorts = [
+  { start = 28000, end = 28010 },
+]
+
+# 管理面板（仅本机访问，外网通过 SSH tunnel 看）
+webServer.addr = "127.0.0.1"
+webServer.port = 7500
+webServer.user = "admin"
+webServer.password = "deepcoke_dash_2026"
+
+# 日志
+log.to = "/var/log/deepcoke/frps.log"
+log.level = "info"
+log.maxDays = 7
+
+# 最大同时连接数（轻量 2核2G 不需要太多）— frp 0.59 用 transport.maxPoolCount
+transport.maxPoolCount = 5

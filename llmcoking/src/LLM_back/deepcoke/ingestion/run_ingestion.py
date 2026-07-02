@@ -9,6 +9,7 @@ Usage:
     python -m deepcoke.ingestion.run_ingestion
 """
 import sys
+import os
 import json
 import time
 import sqlite3
@@ -117,8 +118,10 @@ def run():
     # Step 1: Initialize ChromaDB + embedding model (may download ~440MB on first run)
     print("[初始化] 加载 ChromaDB 和 Embedding 模型（首次运行需下载约440MB，请耐心等待）...")
     init_t0 = time.time()
-    collection = get_collection()
-    print(f"[初始化] ChromaDB 就绪 ✓ （耗时 {time.time() - init_t0:.1f}s）")
+    # 玻尔-C:INGEST_COLLECTION 指定目标 collection(用户库走独立 user_papers,不污染共享语料);默认共享
+    _target_col = os.getenv("INGEST_COLLECTION") or None
+    collection = get_collection(_target_col)
+    print(f"[初始化] ChromaDB 就绪 ✓ （collection={_target_col or '默认'}，耗时 {time.time() - init_t0:.1f}s）")
 
     # Step 2: Scan PDFs
     print(f"[扫描] 扫描目录: {config.PAPERS_DIR}")
@@ -218,6 +221,8 @@ def run():
                 "year": meta.year or 0,
                 "authors": ", ".join(meta.authors[:5]),
                 "keywords": ", ".join(meta.keywords[:10]),
+                # 玻尔-C:用户库 chunk 标 owner(共享语料为空串),mylib 检索按它过滤
+                "owner_user_id": os.getenv("INGEST_OWNER", ""),
             },
         )
 

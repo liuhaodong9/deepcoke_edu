@@ -897,7 +897,7 @@ FULLTEXT_BUDGET_TOKENS = VLLM_MAX_TOKENS - RESERVED_OUTPUT_TOKENS - RESERVED_OVE
 # BGE reranker 阈值(高于该值的 paper 才进 prompt)
 BGE_RERANK_THRESHOLD = 0.7
 # 候选 paper 数(进 BGE rerank 的上限)
-RERANK_CANDIDATE_N = 8
+RERANK_CANDIDATE_N = 10   # 投这么多篇候选进 BGE rerank(20 在 CPU+满载GPU 上单次 >2min 不可用,回调到 10 保响应)
 
 
 def estimate_tokens(text: str) -> int:

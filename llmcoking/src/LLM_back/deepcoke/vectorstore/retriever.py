@@ -33,6 +33,7 @@ def retrieve(
     query: str,
     top_k: int | None = None,
     where: dict | None = None,
+    collection_name: str | None = None,
 ) -> list[RetrievedChunk]:
     """
     Retrieve top-k most relevant chunks for a query.
@@ -46,7 +47,7 @@ def retrieve(
         List of RetrievedChunk sorted by relevance.
     """
     k = top_k or config.RETRIEVAL_TOP_K
-    collection = get_collection()
+    collection = get_collection(collection_name)   # 玻尔-C:None=共享语料;"user_papers"=用户库
 
     query_params = {
         "query_texts": [query],

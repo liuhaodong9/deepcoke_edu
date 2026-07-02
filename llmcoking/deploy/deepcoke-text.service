@@ -1,0 +1,24 @@
+[Unit]
+Description=DeepCoke Text Backend (FastAPI)
+After=network-online.target mysql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=dbcloud
+Group=dbcloud
+WorkingDirectory=/home/dbcloud/deepcoke_edu/llmcoking/src/LLM_back
+# 加载 .env：MYSQL/Neo4j 密码、LLM_MODE、AUTH_LEGACY_BYPASS 等敏感配置
+EnvironmentFile=/home/dbcloud/deepcoke_edu/llmcoking/deploy/deepcoke.env
+# 公网部署务必关掉 legacy token 兼容
+Environment=AUTH_LEGACY_BYPASS=false
+# 用 vLLM 时切到 openai 模式
+Environment=LLM_MODE=openai
+ExecStart=/home/dbcloud/anaconda3/envs/deepcoke/bin/python -m uvicorn test:app --host 127.0.0.1 --port 8000 --workers 1
+Restart=on-failure
+RestartSec=5
+StandardOutput=append:/var/log/deepcoke/text.log
+StandardError=append:/var/log/deepcoke/text.err.log
+
+[Install]
+WantedBy=multi-user.target

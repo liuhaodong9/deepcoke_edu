@@ -76,14 +76,27 @@ def format_references(references: list[dict]) -> str:
     return "\n".join(lines)
 
 
+_MODE_INSTRUCTIONS = {
+    "review": (
+        "\n【本次为「综述模式」】请把回答组织成一篇结构化文献综述,分节:"
+        "研究背景 / 核心机制 / 方法与表征 / 主要发现 / 争议与趋势,每节都用 [N] 标注来源。"
+    ),
+    "compare": (
+        "\n【本次为「对比模式」】回答主体必须是一个 Markdown 对比表(逐篇横向对比:"
+        "材料/煤种、工艺条件、核心结论、关键数值,每格带 [N]),表格前后各一两句话即可,不要长篇散文。"
+    ),
+}
+
+
 def build_answer_prompt(
     question: str,
     evidence_text: str,
     kg_context: str = "",
     reasoning_trace: str = "",
     structured_evidence: str = "",
+    mode: str = "qa",
 ) -> list[dict]:
-    """Build the prompt messages for answer generation."""
+    """Build the prompt messages for answer generation。mode: qa/review/compare(玻尔-A 回答模式)。"""
     system_prompt = (
         "你是高校智慧化工软件平台 DeepResearch，由苏州龙泰氢一能源科技有限公司研发。"
         "请基于提供的文献证据回答用户问题。\n\n"
@@ -123,7 +136,15 @@ def build_answer_prompt(
         "4. 使用标准 Markdown 格式\n"
         "5. 数学公式使用 $$ 包裹\n"
         "6. 不要提供 mermaid 图\n"
-        "7. 回答要有逻辑结构，先概述再详述"
+        "7. 回答要有逻辑结构，先概述再详述\n"
+        "8. 当回答涉及 3 篇及以上文献、且适合横向对比时，在末尾追加一节「## 文献对比」，"
+        "用 Markdown 表格逐篇对比。每行一篇文献，首列为文献编号 [N]，列尽量含：材料/煤种、"
+        "关键工艺条件、核心结论、关键数值。示例：\n"
+        "   | 文献 | 材料/煤种 | 工艺条件 | 核心结论 | 关键数值 |\n"
+        "   | --- | --- | --- | --- | --- |\n"
+        "   | [1] | 气煤+焦煤 | 1000°C, 3°C/min | CSR 随挥发分升高而下降 | CSR 62→48 |\n"
+        "   单元格里的数值/结论也带 [N] 引用；某维度文献没提就留空，**严禁编造**。"
+        "单篇文献或非对比类问题不要硬凑对比表。"
     )
 
     user_parts = [f"**用户问题：** {question}\n"]
@@ -144,6 +165,8 @@ def build_answer_prompt(
         user_parts.append(
             "（未检索到直接相关的文献证据，请基于你的专业知识回答，并说明需要进一步查阅文献。）"
         )
+
+    system_prompt += _MODE_INSTRUCTIONS.get(mode, "")
 
     return [
         {"role": "system", "content": system_prompt},
@@ -183,6 +206,7 @@ def generate_answer_stream(
     kg_context: str = "",
     reasoning_trace: str = "",
     structured_evidence: str = "",
+    mode: str = "qa",
 ):
     """
     Generate a streaming answer with citations.
@@ -191,7 +215,7 @@ def generate_answer_stream(
     LLM 偶尔违反 prompt 输出 [#N], stream 流式 tail buffer 兜底删除。
     """
     evidence_text, references = build_evidence_context(chunks)
-    messages = build_answer_prompt(question, evidence_text, kg_context, reasoning_trace, structured_evidence)
+    messages = build_answer_prompt(question, evidence_text, kg_context, reasoning_trace, structured_evidence, mode)
 
     def raw_pieces():
         stream = chat(messages, stream=True)

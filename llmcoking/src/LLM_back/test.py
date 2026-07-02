@@ -19,6 +19,7 @@ import hashlib
 
 # ── Admin papers router (上传 PDF/文档管理) ─────────────────────────
 from admin_papers import router as admin_papers_router
+from user_library import router as user_library_router
 
 # ── DeepCoke Pipeline ──────────────────────────────────────────────
 # USE_ENHANCED_PIPELINE=true → 走 PaperQA2/NotebookLM 风格的 agent 全文阅读
@@ -100,6 +101,17 @@ class Message(Base):
     bot_response = Column(Text, nullable=False)  # AI 生成的回复
     timestamp = Column(TIMESTAMP, nullable=False)  # 记录时间戳
 
+# ⑫ 收藏表(用户收藏的文献,挂 user_id;(user_id,paper_id) 逻辑唯一,去重在接口里做)
+class Favorite(Base):
+    __tablename__ = "paper_favorites"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(String(50), nullable=False, index=True)
+    paper_id = Column(Integer, nullable=False)
+    title = Column(String(500), nullable=True)
+    authors = Column(String(500), nullable=True)
+    year = Column(Integer, nullable=True)
+    created_at = Column(TIMESTAMP, server_default=func.now())
+
 # 延迟初始化数据库（在 FastAPI 启动事件中执行，避免模块加载时 MySQL 未启动导致崩溃）
 def _migrate_add_columns(conn):
     """给老库 chat_sessions 补 folder_id / title 列；老库没有就跳过。MySQL 没有 IF NOT EXISTS，捕获异常即可。"""
@@ -120,6 +132,7 @@ app.middleware("http")(make_auth_middleware(SessionLocal, UserToken))
 
 # 挂载 admin papers 子路由(上传 PDF / 列表 / 删除 / 重抽 summary)
 app.include_router(admin_papers_router)
+app.include_router(user_library_router)
 
 
 @app.on_event("startup")
@@ -248,7 +261,7 @@ async def create_session(user_id: str, db: Session = Depends(get_db)):
 
 # ✅ **DeepCoke 知识增强问答端点（RAG + ESCARGOT推理 + 知识图谱）**
 @app.post("/chat/")
-async def chat(session_id: str, user_message: str, db: Session = Depends(get_db)):
+async def chat(session_id: str, user_message: str, mode: str = "qa", db: Session = Depends(get_db)):
     # 读取最近 3 轮历史(给 query 跨轮补全用),按时间正序排列
     history = []
     try:
@@ -275,7 +288,7 @@ async def chat(session_id: str, user_message: str, db: Session = Depends(get_db)
             # 使用 DeepCoke 知识增强管线处理问题
             # 管线内部完成：问题分类 → 中英翻译 → 向量检索 + KG检索 →
             # ESCARGOT推理(复杂问题) → 证据驱动回答生成 → 延伸问题生成
-            async for piece in process_question(user_message, history=history):
+            async for piece in process_question(user_message, history=history, mode=mode):
                 bot_response_parts.append(piece)
                 yield piece
                 await asyncio.sleep(0)
@@ -502,6 +515,52 @@ async def delete_folder(folder_id: int, db: Session = Depends(get_db)):
     return {"status": "ok", "deleted_folder_id": folder_id}
 
 
+# ══════════════════════════════════════════════════════════════════
+# ⑫ 文献收藏
+# ══════════════════════════════════════════════════════════════════
+class FavoriteBody(BaseModel):
+    user_id: str
+    paper_id: int
+    title: Optional[str] = None
+    authors: Optional[str] = None
+    year: Optional[int] = None
+
+
+@app.get("/favorites/")
+async def list_favorites(user_id: str, db: Session = Depends(get_db)):
+    """列出用户收藏的文献(按收藏时间倒序)。"""
+    rows = (db.query(Favorite).filter(Favorite.user_id == user_id)
+            .order_by(Favorite.created_at.desc()).all())
+    return [{"paper_id": f.paper_id, "title": f.title, "authors": f.authors,
+             "year": f.year} for f in rows]
+
+
+@app.post("/favorites/")
+async def add_favorite(body: FavoriteBody, db: Session = Depends(get_db)):
+    """收藏一篇文献。已收藏则幂等返回。"""
+    exist = (db.query(Favorite)
+             .filter(Favorite.user_id == body.user_id, Favorite.paper_id == body.paper_id)
+             .first())
+    if exist:
+        return {"status": "exists", "paper_id": body.paper_id}
+    fav = Favorite(user_id=body.user_id, paper_id=body.paper_id,
+                   title=(body.title or "")[:500], authors=(body.authors or "")[:500],
+                   year=body.year)
+    db.add(fav)
+    db.commit()
+    return {"status": "ok", "paper_id": body.paper_id}
+
+
+@app.delete("/favorites/")
+async def remove_favorite(user_id: str, paper_id: int, db: Session = Depends(get_db)):
+    """取消收藏。"""
+    n = (db.query(Favorite)
+         .filter(Favorite.user_id == user_id, Favorite.paper_id == paper_id)
+         .delete(synchronize_session=False))
+    db.commit()
+    return {"status": "ok", "removed": n}
+
+
 # 4️⃣ **查询某个会话的所有聊天记录**
 @app.get("/messages/")
 async def get_messages(session_id: str, db: Session = Depends(get_db)):
@@ -721,6 +780,41 @@ async def get_chunk_full(chunk_id: str):
 
 
 # ─── 知识图谱子图(给前端 vis-network 渲染)──────────────────────
+@app.get("/papers/{paper_id}/similar")
+async def papers_similar(paper_id: int, k: int = 8):
+    """相似论文推荐:取该篇 paper 级卡片向量,在 papers_cards 里找最近邻(语义相似,不靠引用)。"""
+    from deepcoke.vectorstore.chromadb_store import get_collection
+    try:
+        cards = get_collection("papers_cards")
+        got = cards.get(ids=[f"paper_{paper_id}"], include=["embeddings"])
+        embs = got.get("embeddings")
+        if not embs or embs[0] is None:
+            return {"paper_id": paper_id, "similar": []}
+        res = cards.query(query_embeddings=[embs[0]], n_results=k + 1)
+    except Exception as e:
+        logger.warning(f"[similar] {e}")
+        return {"paper_id": paper_id, "similar": []}
+    out = []
+    ids0 = (res.get("ids") or [[]])[0]
+    metas0 = (res.get("metadatas") or [[]])[0]
+    dists0 = (res.get("distances") or [[]])[0]
+    for i, _rid in enumerate(ids0):
+        m = metas0[i] or {}
+        if m.get("paper_id") == paper_id:
+            continue   # 排除自己
+        dist = dists0[i] if i < len(dists0) else 1.0
+        out.append({
+            "paper_id": m.get("paper_id"),
+            "title": m.get("title", "") or "",
+            "year": m.get("year", 0),
+            "category": m.get("category", ""),
+            "score": round(max(0.0, 1.0 - float(dist)), 3),   # cosine 距离 → 相似度
+        })
+        if len(out) >= k:
+            break
+    return {"paper_id": paper_id, "similar": out}
+
+
 @app.get("/paper_graph")
 async def paper_graph(paper_ids: str, scores: str = ""):
     """给定一组 paper_id,返回它们在知识图谱中的子图(vis-network 格式)。
@@ -764,7 +858,17 @@ async def paper_graph(paper_ids: str, scores: str = ""):
         if rows:
             return {**_build_graph_from_neo4j(rows, score_map), "source": "neo4j"}
 
-    # 2) Fallback: Query→Papers 放射,只用 papers.db
+    # 2) GraphRAG-lite:概念图就绪(kg_entities.json)→ 出 论文↔概念 关联图
+    try:
+        from deepcoke.knowledge_graph import kg_index
+        if kg_index.available():
+            g = kg_index.concept_graph(pids)
+            if g.get("edges"):
+                return g
+    except Exception as _e:
+        logger.warning(f"[kg_index graph] {_e}")
+
+    # 3) Fallback: Query→Papers 放射,只用 papers.db
     return {**_build_graph_fallback(pids, score_map), "source": "fallback"}
 
 

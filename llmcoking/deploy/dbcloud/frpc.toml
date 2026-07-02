@@ -1,0 +1,32 @@
+# frp 客户端配置 — 跑在 dbcloud 上的 liuhaodong 容器内
+# 主动连出 → 腾讯云 106.52.177.125:7000
+# 把容器内的 8000/8001 隧道到腾讯云 28000/28001（被 nginx 反代）
+#
+# 部署位置: /opt/deepcoke/frpc.toml
+# 启动:     /opt/frp/frpc -c /opt/deepcoke/frpc.toml  （由 supervisor/tmux 管）
+
+serverAddr = "106.52.177.125"
+serverPort = 7000
+
+auth.method = "token"
+auth.token = "Dc_3jK9pQrL5xN7vM2hY8zT4wU6sE1aB"
+
+log.to = "/var/log/deepcoke/frpc.log"
+log.level = "info"
+log.maxDays = 7
+
+# 文本后端 8000 → 腾讯云 28000（nginx 反代到这里）
+[[proxies]]
+name = "deepcoke-text-backend"
+type = "tcp"
+localIP = "127.0.0.1"
+localPort = 8000
+remotePort = 28000
+
+# 语音后端 8001 → 腾讯云 28001
+[[proxies]]
+name = "deepcoke-voice-backend"
+type = "tcp"
+localIP = "127.0.0.1"
+localPort = 8001
+remotePort = 28001
