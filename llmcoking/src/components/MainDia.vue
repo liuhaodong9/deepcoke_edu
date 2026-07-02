@@ -1038,7 +1038,24 @@ export default {
         })
       }
 
+      // ⑦ 实体高亮:焦化领域专业术语加底色(只高亮文本节点,不碰标签/属性)
+      html = this._highlightEntities(html)
       return html
+    },
+    _highlightEntities (html) {
+      // 术语表(英文缩写 + 中文实体);按长度降序避免子串误伤
+      const terms = [
+        'HRTEM', 'WAXS', 'SAXS', 'FTIR', 'XRD', 'Raman', 'XPS', 'NMR', 'TG-MS', 'LDI-TOF-MS',
+        'CSR', 'CRI', 'OTI', '镜质组', '惰质组', '壳质组', '胶质层', '流动度',
+        '乱层结构', '芳香层片', '微晶', '挥发分', '半焦', '炼焦煤', '热解', '碳化', '石墨化',
+        '焦炭反应性', '反应后强度', '焦炭光学组织'
+      ].sort((a, b) => b.length - a.length)
+      const re = new RegExp('(' + terms.map(t => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|') + ')', 'g')
+      // 按标签切分,只在标签外的文本片段上替换
+      return html.split(/(<[^>]*>)/).map(seg => {
+        if (seg.startsWith('<')) return seg
+        return seg.replace(re, '<span class="entity-hl">$1</span>')
+      }).join('')
     },
     scrollToBottom () {
       this.$nextTick(() => {
@@ -1774,6 +1791,16 @@ export default {
   margin-top: 5px;
   display: flex;
   gap: 14px;
+}
+::v-deep .entity-hl {
+  background: rgba(20, 158, 250, 0.14);
+  border-radius: 3px;
+  padding: 0 2px;
+  color: #7ec1ff;
+}
+[data-theme="light"] ::v-deep .entity-hl {
+  background: #e7f1fb;
+  color: #2f6fb3;
 }
 .focus-bar {
   display: flex;
