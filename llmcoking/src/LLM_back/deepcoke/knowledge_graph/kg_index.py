@@ -91,16 +91,67 @@ def concept_paper_ids(concept: str):
     return list(idx["c2p"].get((concept or "").lower(), set())) if idx else []
 
 
+@functools.lru_cache(maxsize=1)
+def _load_relations():
+    """批3 关系三元组(kg_relations.json)。缺则 None,退化到共现图。"""
+    path = config.DATA_DIR / "kg_relations.json"
+    if not path.exists():
+        return None
+    try:
+        data = json.load(open(path, encoding="utf-8"))
+    except Exception:
+        return None
+    if not data:
+        return None
+    # 有向邻接:主体(lower) → [(关系, 客体展示名, 出处paper数)]
+    out_edges = defaultdict(lambda: defaultdict(int))   # subj → (rel, obj) → count
+    disp = {}
+    for rec in data:
+        for tp in (rec.get("triples") or []):
+            if len(tp) != 3:
+                continue
+            s, r, o = tp
+            sl, ol = str(s).strip().lower(), str(o).strip().lower()
+            if not sl or not ol:
+                continue
+            out_edges[sl][(r, ol)] += 1
+            disp.setdefault(sl, s)
+            disp.setdefault(ol, o)
+    return {"out": out_edges, "disp": disp, "n": len(data)}
+
+
+def relations_of(concept: str, k: int = 6):
+    """某概念作为主体的有向关系:[(关系, 客体展示名, 权重)]。"""
+    rel = _load_relations()
+    if not rel:
+        return []
+    cl = (concept or "").lower()
+    items = sorted(rel["out"].get(cl, {}).items(), key=lambda x: -x[1])[:k]
+    return [(r, rel["disp"].get(o, o), n) for (r, o), n in items]
+
+
+def relations_available() -> bool:
+    return _load_relations() is not None
+
+
 def build_kg_context(concepts, max_concepts: int = 4) -> str:
-    """查询概念 → 相关概念/共现 文本(喂 generate 的 kg_context)。"""
-    idx = _load()
-    if not idx or not concepts:
+    """查询概念 → 关系三元组(优先)+ 共现 文本(喂 generate 的 kg_context)。
+    关系图与共现图独立:任一就绪即可产出。"""
+    if not concepts:
+        return ""
+    has_cooc = _load() is not None
+    has_rel = _load_relations() is not None
+    if not (has_cooc or has_rel):
         return ""
     lines = []
     for c in list(concepts)[:max_concepts]:
-        rel = related_concepts(c, 5)
+        # 优先给带方向的关系(镜质组—提高→CSR),更利于因果推理
+        rels = relations_of(c, 4) if has_rel else []
+        if rels:
+            lines.append(f"- 「{c}」的已知关系:" + "; ".join(f"{c}—{r}→{o}" for r, o, _ in rels))
+        rel = related_concepts(c, 5) if has_cooc else []
         if rel:
-            lines.append(f"- 「{c}」在文献中常与以下概念共现:" + "、".join(d for d, _ in rel))
+            lines.append(f"- 「{c}」常共现:" + "、".join(d for d, _ in rel))
     return "\n".join(lines)
 
 
