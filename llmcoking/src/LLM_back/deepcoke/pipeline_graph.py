@@ -436,6 +436,19 @@ def _extract_constraints(history: list, question: str) -> dict:
                          r"|only\s+experimental", blob, re.I)):
         cons["exclude_doctypes"] = ["review"]
 
+    # preferred_methods:用户点名的表征手段(HRTEM/XRD/Raman…),命中后追加进检索、结果偏向含该法的文献
+    # 中文里"用HRTEM"无单词边界,不能用 \b;用"前后非字母"判定,长名(HRTEM)优先于短名(TEM)
+    _methods = ["HRTEM", "SEM", "TEM", "XRD", "Raman", "FTIR", "NMR", "SAXS", "WAXS", "XPS", "TG-MS", "in-situ"]
+    hit_m = []
+    for m in _methods:
+        if re.search(r"(?<![A-Za-z])" + re.escape(m) + r"(?![A-Za-z])", blob, re.I):
+            # 避免 TEM 命中已算入的 HRTEM/SEM 片段
+            if m == "TEM" and any(x in hit_m for x in ("HRTEM",)):
+                continue
+            hit_m.append(m)
+    if hit_m:
+        cons["preferred_methods"] = list(dict.fromkeys(hit_m))
+
     return cons
 
 

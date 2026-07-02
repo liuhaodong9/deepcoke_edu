@@ -138,6 +138,10 @@ def node_fast_summary_retrieve(state: EnhancedPipelineState) -> dict:
       D. 输出 RetrievedChunk(每条 = paper 内一个 chunk 原文段) + LITQA_META
     """
     eng_queries = state.get("english_queries", []) or [state["question"]]
+    # ⑩ 偏好表征手段:把用户点名的方法(HRTEM/XRD…)追加为一条检索式,让召回偏向含该法的文献
+    _pm = (state.get("constraints") or {}).get("preferred_methods") or []
+    if _pm:
+        eng_queries = eng_queries + [f"{state.get('question', '')} {' '.join(_pm)}"]
 
     steps = [{
         'text': f'A. 用 {len(eng_queries)} 个 query 检索 {RERANK_CANDIDATE_N} 篇候选论文…',

@@ -654,6 +654,7 @@ export default {
       const parts = []
       if (c.year_after) parts.push(`${c.year_after} 年后`)
       if (c.exclude_doctypes && c.exclude_doctypes.includes('review')) parts.push('排除综述')
+      if (c.preferred_methods && c.preferred_methods.length) parts.push('偏好方法：' + c.preferred_methods.join('/'))
       return parts.join(' · ')
     },
     pickSupportingChunk (message, paperId, anchorEl) {
