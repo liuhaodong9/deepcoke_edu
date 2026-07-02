@@ -584,8 +584,8 @@ def translate_query(question: str, history: list[dict] | None = None) -> dict:
         cleaned = [pre_q] + cleaned
     if not cleaned:
         cleaned = [pre_q or question]
-    # query planner:放宽到 8 个多样检索式(撒宽召回网);太多则下游召回开销大
-    cleaned = cleaned[:8]
+    # query planner:5 个多样检索式(8 条在 CPU 检索上太慢;5 条覆盖足够,每条省一次 hybrid_search)
+    cleaned = cleaned[:5]
 
     return {
         "english_queries": cleaned,

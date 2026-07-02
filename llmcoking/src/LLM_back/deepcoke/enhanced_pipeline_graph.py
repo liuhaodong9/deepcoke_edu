@@ -475,7 +475,7 @@ def _fallback_to_retrieve(state: EnhancedPipelineState, out, steps, reason: str)
 # ── C⑨': 关键图片选取(无 VLM,图文 caption 关联) ──────────────────────
 FIGURE_RERANK_MIN = 0.30   # 图 caption 与 query 的相关阈值,低于不展示
 FIGURE_TOP_N = 3
-FIGURE_RERANK_MAX = 30     # CPU 重排图注上限(全量 187 图 61s,封顶保响应)
+FIGURE_RERANK_MAX = 12     # CPU 重排图注上限(30→12 再提速,~5s;够选 top-3 关键图)
 
 
 def _select_key_figures(packed_papers: list, query: str) -> list:
