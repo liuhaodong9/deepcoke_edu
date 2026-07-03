@@ -54,12 +54,14 @@ def classify(title: str, abstract: str) -> str:
              {"role": "user", "content": f"标题: {title}\n摘要: {abstract[:1500]}"}],
             stream=False,
         )
-        # _NonStreamResponse 有 .content;兜底 str()
-        txt = (getattr(resp, "content", None) or str(resp)).lower()
+        # _NonStreamResponse 模拟 OpenAI: resp.choices[0].message.content
+        txt = resp.choices[0].message.content or ""
+        # Qwen3 可能带 <think>...</think>,剥掉
+        txt = re.sub(r"<think>[\s\S]*?</think>", "", txt).lower()
         for k in _KEYS:
             if k in txt:
                 return k
-        return "carbon_structure"   # 兜底
+        return ""   # 匹配不到返回空(不硬兜底成 carbon_structure,避免掩盖问题)
     except Exception as e:
         print(f"  分类失败: {e}")
         return "carbon_structure"
@@ -82,13 +84,19 @@ def run(force: bool, write_chroma: bool):
 
     assigned = {}
     t0 = time.time()
+    miss = 0
     for i, (pid, title, abstract) in enumerate(rows, 1):
         topic = classify(title or "", abstract or "")
+        if not topic:
+            topic = "carbon_structure"   # 兜底(仅少量)
+            miss += 1
         db.execute("UPDATE papers SET topic = ? WHERE id = ?", (topic, pid))
         assigned[pid] = topic
         if i % 10 == 0:
             db.commit()
         print(f"[{i}/{len(rows)}] pid={pid} → {topic}  {(title or '')[:40]}")
+    if miss:
+        print(f"⚠ {miss} 篇 LLM 未给出明确主题,兜底 carbon_structure")
     db.commit()
     print(f"分类完成 {len(rows)} 篇 ({time.time() - t0:.0f}s)")
 
