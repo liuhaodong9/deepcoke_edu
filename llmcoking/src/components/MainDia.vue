@@ -97,6 +97,11 @@
                     <span v-if="p.journal" class="litqa-journal">{{ p.journal }}</span>
                     <span v-if="p.category" class="litqa-category">{{ p.category }}</span>
                   </div>
+                  <div v-if="p.exp_coal || p.exp_methods || p.exp_perf" class="litqa-exp">
+                    <span v-if="p.exp_coal" class="litqa-exp-item">🪨 {{ p.exp_coal }}</span>
+                    <span v-if="p.exp_methods" class="litqa-exp-item">🔬 {{ p.exp_methods }}</span>
+                    <span v-if="p.exp_perf" class="litqa-exp-item">📊 {{ p.exp_perf }}</span>
+                  </div>
                   <div v-if="supportSents(message, p)" class="litqa-support">
                     <span class="litqa-support-label">支持的回答句</span>
                     <div
@@ -1672,6 +1677,19 @@ export default {
   white-space: nowrap;
   background: #e8f0e8;
   color: #5a7d5a;
+}
+.litqa-exp {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 3px;
+  font-size: 11px;
+  color: #6b7c93;
+}
+.litqa-exp-item {
+  background: #f4f7fb;
+  border-radius: 3px;
+  padding: 1px 6px;
 }
 .litqa-doctype.dt-research {
   background: #e7f3ea;

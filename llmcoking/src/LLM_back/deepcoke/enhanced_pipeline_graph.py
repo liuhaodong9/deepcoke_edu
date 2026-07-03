@@ -393,6 +393,9 @@ def node_fast_summary_retrieve(state: EnhancedPipelineState) -> dict:
             "journal": "",
             "category": meta.get("category", "") or "",
             "topic": meta.get("topic", "") or "",
+            "exp_methods": meta.get("exp_methods", "") or "",
+            "exp_coal": meta.get("exp_coal", "") or "",
+            "exp_perf": meta.get("exp_perf", "") or "",
             "score": float(rscore),
             "summary_type": summary_type_by_pid.get(pid, ""),
         })
@@ -459,6 +462,9 @@ def node_fast_summary_retrieve(state: EnhancedPipelineState) -> dict:
             "research_type": _research_type(
                 p["title"], (paper_meta_cache.get(p["paper_id"], {}) or {}).get("abstract", ""),
                 _classify_doctype(p["title"])),
+            "exp_methods": p.get("exp_methods", ""),
+            "exp_coal": p.get("exp_coal", ""),
+            "exp_perf": p.get("exp_perf", ""),
         }
         for p in packed_papers
     ]
