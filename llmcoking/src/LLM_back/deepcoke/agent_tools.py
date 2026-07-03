@@ -1224,6 +1224,14 @@ def pack_chunk_evidence(
 
         ref_num = len(packed_papers) + 1
         header = f"\n## Paper [{ref_num}] {paper.get('title', '')} ({paper.get('year', '?')})\n"
+        # P2 联动:给证据附实验条件(煤种/表征/性能),让回答能带条件约束说因果
+        _ec = []
+        for k, lbl in (("exp_coal", "煤种"), ("exp_methods", "表征方法"), ("exp_perf", "性能指标")):
+            v = (paper.get(k) or "").strip()
+            if v:
+                _ec.append(f"{lbl}:{v}")
+        if _ec:
+            header += f"[实验条件] {' | '.join(_ec)}\n"
         block_parts = [header]
         for c in chs:
             block_parts.append(f"[#{c.chunk_index}] {c.text}\n")
