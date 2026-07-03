@@ -94,18 +94,47 @@ class EnhancedPipelineState(TypedDict):
 # ══════════════════════════════════════════════════════════════════
 
 def _classify_doctype(title: str) -> str:
-    """从标题粗判文献类型。corrigendum/editorial 不该当主要证据。"""
+    """从标题粗判文献类型。corrigendum/editorial/letter/news/会议摘要 不该当主要证据。"""
     t = (title or "").lower().strip()
     if re.match(r"^\s*(corrigendum|erratum|retraction|withdrawn)\b", t) or "corrigendum to" in t or "erratum to" in t:
         return "corrigendum"
     if re.match(r"^\s*(editorial|reply to|comment on|response to|preface|foreword|book review)\b", t):
         return "editorial"
+    if re.match(r"^\s*(letter to|letter:)", t) or re.search(r"\bletter to the editor\b", t):
+        return "letter"
+    if re.match(r"^\s*(news|announcement|obituary|in memoriam|calendar|call for papers)\b", t):
+        return "news"
+    # 会议摘要/文摘库编号(如 "96/01219 Dynamic behaviour...")
+    if re.match(r"^\s*\d{2}/\d{4,}\b", t) or re.search(r"\b(conference abstract|meeting abstract|extended abstract)\b", t):
+        return "abstract"
     if re.search(r"\b(review|overview|state[- ]of[- ]the[- ]art|advances in|progress in|perspective)\b", t):
         return "review"
     return "research"
 
 
-_NONEVIDENCE_TYPES = ("corrigendum", "editorial")   # 不当证据的类型
+# 不当证据的类型(勘误/社论/信件/新闻/会议摘要 → 从候选剔除)
+_NONEVIDENCE_TYPES = ("corrigendum", "editorial", "letter", "news", "abstract")
+
+
+def _title_key(title: str) -> str:
+    """标题归一化指纹:去标点/小写/取实词,用于近似去重(预印本 vs 正式版、标题微差)。"""
+    t = re.sub(r"[^a-z0-9一-鿿 ]", " ", (title or "").lower())
+    words = [w for w in t.split() if len(w) > 2]
+    return " ".join(words[:10])
+
+
+def _dedup_candidates(candidate_ids: list, meta_of) -> list:
+    """标题近似去重:同指纹只留第一篇(保留投票顺序=相关度高的)。meta_of(pid)→meta。"""
+    seen, kept = set(), []
+    for pid in candidate_ids:
+        key = _title_key((meta_of(pid) or {}).get("title", ""))
+        if key and key in seen:
+            logger.info(f"[dedup] 剔除标题重复 paper={pid}")
+            continue
+        if key:
+            seen.add(key)
+        kept.append(pid)
+    return kept
 
 # 主题分库软路由:问题→主题 关键词判定(6 类与 assign_topics.TOPICS 对齐)
 _TOPIC_KEYWORDS = {
@@ -237,6 +266,14 @@ def node_fast_summary_retrieve(state: EnhancedPipelineState) -> dict:
             cur = retrieval_score_by_pid.get(c.paper_id, 0.0)
             if float(c.score) > cur:
                 retrieval_score_by_pid[c.paper_id] = float(c.score)
+
+    # ④ 标题近似去重(预印本/正式版/标题微差同篇),精读模式跳过。meta 缓存复用
+    if not _focus and len(candidate_paper_ids) > 1:
+        def _meta_of(pid):
+            m = paper_meta_cache.get(pid) or _get_paper_meta(pid)
+            paper_meta_cache[pid] = m
+            return m
+        candidate_paper_ids = _dedup_candidates(candidate_paper_ids, _meta_of)
 
     steps[0]['done'] = True
     steps[0]['text'] = f"A. 选出 {len(candidate_paper_ids)} 篇候选,开始 BGE rerank…"

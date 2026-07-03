@@ -508,7 +508,15 @@ export default {
       }[t] || t
     },
     doctypeLabel (dt) {
-      return { research: '实验研究', review: '综述', corrigendum: '勘误', editorial: '社论' }[dt] || '研究'
+      return {
+        research: '实验研究',
+        review: '综述',
+        corrigendum: '勘误',
+        editorial: '社论',
+        letter: '通讯',
+        news: '资讯',
+        abstract: '会议摘要'
+      }[dt] || '研究'
     },
     supportSents (message, p) {
       // ⑤ 该篇论文支撑的回答句(来自 citation verifier)
