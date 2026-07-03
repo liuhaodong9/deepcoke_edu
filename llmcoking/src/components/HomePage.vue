@@ -225,17 +225,39 @@
         <div v-if="showTimeline" class="tl-mask" @click.self="showTimeline = false">
             <div class="tl-panel">
                 <div class="tl-head">
-                    <span>📈 研究脉络 — 按年份看主题演变</span>
+                    <span class="tl-tabs">
+                        <span class="tl-tab" :class="{ on: tlTab === 'timeline' }" @click="tlTab = 'timeline'">📈 研究脉络</span>
+                        <span class="tl-tab" :class="{ on: tlTab === 'authors' }" @click="switchToAuthors">👥 高产作者</span>
+                    </span>
                     <span class="tl-close" @click="showTimeline = false">✕</span>
                 </div>
-                <div v-if="!timelineData.length" class="tl-empty">加载中…</div>
-                <div v-else class="tl-body">
-                    <div v-for="y in timelineData" :key="y.year" class="tl-row">
-                        <div class="tl-year">{{ y.year }}<span class="tl-total">{{ y.total }}篇</span></div>
-                        <div class="tl-topics">
-                            <div v-for="t in y.topics" :key="t.topic" class="tl-topic">
-                                <span class="tl-topic-name">{{ timelineTopicLabel(t.topic) }} ×{{ t.count }}</span>
-                                <span class="tl-topic-rep" :title="t.rep">{{ t.rep }}</span>
+                <!-- 研究脉络 -->
+                <div v-if="tlTab === 'timeline'">
+                    <div v-if="!timelineData.length" class="tl-empty">加载中…</div>
+                    <div v-else class="tl-body">
+                        <div v-for="y in timelineData" :key="y.year" class="tl-row">
+                            <div class="tl-year">{{ y.year }}<span class="tl-total">{{ y.total }}篇</span></div>
+                            <div class="tl-topics">
+                                <div v-for="t in y.topics" :key="t.topic" class="tl-topic">
+                                    <span class="tl-topic-name">{{ timelineTopicLabel(t.topic) }} ×{{ t.count }}</span>
+                                    <span class="tl-topic-rep" :title="t.rep">{{ t.rep }}</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <!-- 高产作者 -->
+                <div v-else>
+                    <div v-if="!authorsData.length" class="tl-empty">加载中…</div>
+                    <div v-else class="tl-body">
+                        <div v-for="a in authorsData" :key="a.name" class="tl-row">
+                            <div class="tl-year tl-author-count">{{ a.count }}<span class="tl-total">篇</span></div>
+                            <div class="tl-topics">
+                                <div class="tl-topic">
+                                    <span class="tl-topic-name">{{ a.name }}</span>
+                                    <span class="tl-topic-rep">主研：{{ timelineTopicLabel(a.top_topic) }}</span>
+                                </div>
+                                <div class="tl-topic-rep" :title="(a.papers || []).join(' / ')">{{ (a.papers || [])[0] }}</div>
                             </div>
                         </div>
                     </div>
@@ -259,7 +281,9 @@ export default {
       sessionId: '',
       userId: currentUser(), // 真实登录用户(未登录为空,路由守卫会挡在登录页)
       showTimeline: false,
+      tlTab: 'timeline',
       timelineData: [],
+      authorsData: [],
       multiSelectMode: false,
       selectedIds: []
     }
@@ -303,6 +327,17 @@ export default {
         plastic_layer: '胶质层',
         other: '其他'
       }[t] || t
+    },
+    async switchToAuthors () {
+      this.tlTab = 'authors'
+      if (this.authorsData.length) return
+      try {
+        const r = await apiFetch('/authors?limit=30')
+        if (r.ok) {
+          const d = await r.json()
+          this.authorsData = d.authors || []
+        }
+      } catch (e) { /* 静默 */ }
     },
     goLanding () {
       this.$router.push('/landing')
@@ -1147,6 +1182,23 @@ export default {
 .tl-close {
   cursor: pointer;
   color: #8a96a6;
+}
+.tl-tabs {
+  display: flex;
+  gap: 16px;
+}
+.tl-tab {
+  cursor: pointer;
+  color: #8a96a6;
+  font-weight: 500;
+  padding-bottom: 2px;
+}
+.tl-tab.on {
+  color: #2f6fb3;
+  border-bottom: 2px solid #2f6fb3;
+}
+.tl-author-count {
+  color: #5a7d5a;
 }
 .tl-empty {
   padding: 40px;

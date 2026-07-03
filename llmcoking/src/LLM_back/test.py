@@ -886,6 +886,49 @@ async def research_timeline():
     return {"years": years, "has_topic": has_topic}
 
 
+# ─── 高产作者/团队(不做消歧,按 authors 字段聚合)────────────────
+@app.get("/authors")
+async def top_authors(limit: int = 30):
+    """按作者聚合论文数+主题分布,返回高产作者(轻量,不做作者消歧)。"""
+    from deepcoke import config as _c
+    import re as _re
+    db = sqlite3.connect(str(_c.DATA_DIR / "papers.db"))
+    try:
+        cols = [r[1] for r in db.execute("PRAGMA table_info(papers)").fetchall()]
+        has_topic = "topic" in cols
+        sel = "authors, title" + (", topic" if has_topic else "")
+        rows = db.execute(f"SELECT {sel} FROM papers WHERE authors IS NOT NULL AND authors != ''").fetchall()
+    except Exception as e:
+        db.close()
+        return {"authors": [], "error": str(e)}
+    db.close()
+
+    agg = {}
+    for r in rows:
+        authors_raw = r[0] or ""
+        title = r[1] or ""
+        topic = (r[2] if has_topic and len(r) > 2 else "") or "other"
+        # 逗号/分号切分,去多余空白;过滤太短的(噪声)
+        for a in _re.split(r"[,;]", authors_raw):
+            name = a.strip()
+            if len(name) < 3 or name.isdigit():
+                continue
+            d = agg.setdefault(name, {"count": 0, "topics": {}, "papers": []})
+            d["count"] += 1
+            d["topics"][topic] = d["topics"].get(topic, 0) + 1
+            if len(d["papers"]) < 5:
+                d["papers"].append(title[:70])
+
+    ranked = sorted(agg.items(), key=lambda x: -x[1]["count"])[:limit]
+    out = [{
+        "name": name,
+        "count": d["count"],
+        "top_topic": max(d["topics"].items(), key=lambda x: x[1])[0] if d["topics"] else "",
+        "papers": d["papers"],
+    } for name, d in ranked if d["count"] >= 2]
+    return {"authors": out, "has_topic": has_topic}
+
+
 # ─── 知识图谱子图(给前端 vis-network 渲染)──────────────────────
 @app.get("/papers/{paper_id}/similar")
 async def papers_similar(paper_id: int, k: int = 8):
