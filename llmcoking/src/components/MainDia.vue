@@ -82,6 +82,7 @@
                   <div class="litqa-paper-head">
                     <span v-if="p.ref_num" class="litqa-paper-ref">[{{ p.ref_num }}]</span>
                     <span class="litqa-doctype" :class="'dt-' + (p.doctype || 'research')">{{ doctypeLabel(p.doctype) }}</span>
+                    <span v-if="p.topic" class="litqa-topic">{{ topicLabel(p.topic) }}</span>
                     <span class="litqa-paper-title">{{ p.title || ('Paper ' + p.paper_id) }}</span>
                     <span
                       class="litqa-fav"
@@ -481,6 +482,16 @@ export default {
         .filter(p => p && p.cited !== false)
         .slice()
         .sort((a, b) => (a.ref_num || 999) - (b.ref_num || 999))
+    },
+    topicLabel (t) {
+      return {
+        carbon_structure: '碳结构',
+        coal_blending: '配煤',
+        pyrolysis: '热解',
+        characterization: '表征',
+        coke_quality: '焦炭质量',
+        plastic_layer: '胶质层'
+      }[t] || t
     },
     doctypeLabel (dt) {
       return { research: '实验研究', review: '综述', corrigendum: '勘误', editorial: '社论' }[dt] || '研究'
@@ -1607,6 +1618,17 @@ export default {
   border-radius: 3px;
   line-height: 1.5;
   white-space: nowrap;
+}
+.litqa-topic {
+  flex-shrink: 0;
+  font-size: 10.5px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 3px;
+  line-height: 1.5;
+  white-space: nowrap;
+  background: #fef3e0;
+  color: #b5711a;
 }
 .litqa-doctype.dt-research {
   background: #e7f3ea;

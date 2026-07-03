@@ -107,9 +107,30 @@ def _classify_doctype(title: str) -> str:
 
 _NONEVIDENCE_TYPES = ("corrigendum", "editorial")   # 不当证据的类型
 
+# 主题分库软路由:问题→主题 关键词判定(6 类与 assign_topics.TOPICS 对齐)
+_TOPIC_KEYWORDS = {
+    "carbon_structure": ["碳结构", "微晶", "乱层", "石墨化", "hrtem", "xrd", "微观结构", "layer", "crystallite", "graphit", "turbostratic"],
+    "coal_blending": ["配煤", "掺配", "blend", "配比", "相容", "相互作用", "compatib", "混合煤"],
+    "pyrolysis": ["热解", "pyrolysis", "官能团", "键能", "自由基", "devolatil", "functional group", "reaxff", "模型化合物"],
+    "characterization": ["表征", "nmr", "ftir", "xps", "tg-ms", "raman", "光谱", "spectroscop", "ct ", "拉曼"],
+    "coke_quality": ["csr", "cri", "焦炭质量", "强度", "反应性", "气孔", "strength", "porosity", "reactivity", "焦炭反应"],
+    "plastic_layer": ["胶质层", "热塑性", "流动度", "渗透", "膨胀压力", "塑性", "fluidity", "plastic", "swelling", "dilat"],
+}
 
-def _quality_bonus(paper: dict, summary_type: str, key_concepts: list) -> float:
-    """⑧ 文献质量微调分(0~0.04)。BGE 是 0-1 归一分(阈值0.7),故封顶很小做 tie-break。"""
+
+def detect_topic(question: str, key_concepts: list) -> str:
+    """问题→主题(关键词计分,无 LLM)。判不出返回空 = 不加权(退化到原行为)。"""
+    blob = (question or "").lower() + " " + " ".join(str(c).lower() for c in (key_concepts or []))
+    best, best_n = "", 0
+    for topic, kws in _TOPIC_KEYWORDS.items():
+        n = sum(1 for kw in kws if kw in blob)
+        if n > best_n:
+            best_n, best = n, topic
+    return best if best_n >= 1 else ""
+
+
+def _quality_bonus(paper: dict, summary_type: str, key_concepts: list, q_topic: str = "") -> float:
+    """⑧ 文献质量微调分(0~0.05)。BGE 是 0-1 归一分(阈值0.7),故封顶很小做 tie-break。"""
     bonus = 0.0
     if summary_type and "abstract" not in summary_type.lower():
         bonus += 0.015
@@ -123,6 +144,9 @@ def _quality_bonus(paper: dict, summary_type: str, key_concepts: list) -> float:
     if key_concepts:
         hit = sum(1 for kc in key_concepts if kc and str(kc).lower() in title)
         bonus += min(0.01, hit * 0.005)
+    # 主题分库软路由:文献主题==问题主题 → 小加权(不排除其他主题,护召回)
+    if q_topic and paper.get("topic") == q_topic:
+        bonus += 0.012
     return bonus
 
 
@@ -302,14 +326,18 @@ def node_fast_summary_retrieve(state: EnhancedPipelineState) -> dict:
             "year": meta.get("year", 0) or 0,
             "journal": "",
             "category": meta.get("category", "") or "",
+            "topic": meta.get("topic", "") or "",
             "score": float(rscore),
             "summary_type": summary_type_by_pid.get(pid, ""),
         })
 
-    # ⑧ 质量排序:BGE 分上叠小幅质量分,只重排打包先后,不动纳入门槛(封顶+0.04 → tie-break)
+    # ⑧ 质量排序 + 主题分库软路由:BGE 分上叠小幅质量分(含同主题加权),只重排打包序不动门槛
     kcs = state.get("key_concepts", []) or []
+    q_topic = detect_topic(state.get("question", ""), kcs)
+    if q_topic:
+        logger.info(f"[topic] 问题主题判定: {q_topic}")
     for rp in ranked_papers:
-        rp["quality"] = round(rp["score"] + _quality_bonus(rp, rp.get("summary_type", ""), kcs), 4)
+        rp["quality"] = round(rp["score"] + _quality_bonus(rp, rp.get("summary_type", ""), kcs, q_topic), 4)
     ranked_papers.sort(key=lambda r: r["quality"], reverse=True)
 
     # 每篇只装 top-M 相关 chunk(不是全文),让多篇都进 prompt 做整合
@@ -361,6 +389,7 @@ def node_fast_summary_retrieve(state: EnhancedPipelineState) -> dict:
             "ref_num": p["ref_num"],
             "summary_type": p.get("summary_type", ""),
             "doctype": _classify_doctype(p["title"]),
+            "topic": p.get("topic", ""),
         }
         for p in packed_papers
     ]
