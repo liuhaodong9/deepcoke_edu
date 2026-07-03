@@ -24,8 +24,16 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, File, HTTPException, UploadFile, Request, Depends
 from fastapi.responses import StreamingResponse
+
+
+def _current_uid(request: Request) -> str:
+    """从 token(中间件设的 state.user_id)取真实用户,忽略 query 传的 user_id,防越权。"""
+    uid = getattr(request.state, "user_id", None)
+    if not uid:
+        raise HTTPException(status_code=401, detail="未登录")
+    return uid
 
 logger = logging.getLogger("deepcoke.user_library")
 router = APIRouter(prefix="/mylib", tags=["mylib"])
@@ -98,11 +106,11 @@ def _bg_ingest(job_id: str, user_id: str, user_dir: str):
 
 # ── API ──────────────────────────────────────────────────────────────────
 @router.post("/upload")
-async def mylib_upload(user_id: str, file: UploadFile = File(...)):
-    """上传 PDF 到我的文献库(异步 ingest)。返回 job_id 轮询进度。"""
+async def mylib_upload(uid: str = Depends(_current_uid), file: UploadFile = File(...)):
+    """上传 PDF 到当前登录用户的文献库(异步 ingest)。返回 job_id 轮询进度。"""
     if not (file.filename or "").lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="只支持 PDF 文件")
-    udir = _user_dir(user_id)
+    udir = _user_dir(uid)
     dest = udir / file.filename
     if dest.exists():
         ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
@@ -112,7 +120,7 @@ async def mylib_upload(user_id: str, file: UploadFile = File(...)):
     file.file.close()
     job_id = uuid.uuid4().hex[:12]
     _set_job(job_id, status="queued", message="已上传,排队处理", filename=file.filename)
-    threading.Thread(target=_bg_ingest, args=(job_id, user_id, str(udir)), daemon=True).start()
+    threading.Thread(target=_bg_ingest, args=(job_id, uid, str(udir)), daemon=True).start()
     return {"job_id": job_id, "filename": file.filename}
 
 
@@ -125,11 +133,11 @@ async def mylib_job(job_id: str):
 
 
 @router.get("/papers")
-async def mylib_list(user_id: str):
-    """我的文献列表(从 user_papers 按 owner 去重)。"""
+async def mylib_list(uid: str = Depends(_current_uid)):
+    """当前登录用户的文献列表(从 user_papers 按 owner 去重)。"""
     try:
         coll = _user_collection()
-        raw = coll.get(where={"owner_user_id": user_id}, include=["metadatas"], limit=20000)
+        raw = coll.get(where={"owner_user_id": uid}, include=["metadatas"], limit=20000)
     except Exception as e:
         logger.warning(f"[mylib list] {e}")
         return []
@@ -145,10 +153,10 @@ async def mylib_list(user_id: str):
 
 
 @router.delete("/papers/{paper_id}")
-async def mylib_delete(paper_id: int, user_id: str):
-    """删我的某篇(强制 owner 匹配,删不了别人的)。"""
+async def mylib_delete(paper_id: int, uid: str = Depends(_current_uid)):
+    """删当前登录用户某篇(强制 owner 匹配,删不了别人的)。"""
     coll = _user_collection()
-    raw = coll.get(where={"$and": [{"paper_id": int(paper_id)}, {"owner_user_id": user_id}]}, limit=20000)
+    raw = coll.get(where={"$and": [{"paper_id": int(paper_id)}, {"owner_user_id": uid}]}, limit=20000)
     ids = raw.get("ids") or []
     if not ids:
         raise HTTPException(status_code=404, detail="这篇不在你的文献库里")
@@ -157,14 +165,14 @@ async def mylib_delete(paper_id: int, user_id: str):
 
 
 @router.post("/chat")
-async def mylib_chat(user_id: str, q: str):
-    """只对我的文献库提问:retrieve(user_papers, owner=uid) → 生成回答,带 [N] 引用我自己的文献。"""
+async def mylib_chat(q: str, uid: str = Depends(_current_uid)):
+    """只对当前登录用户的文献库提问:retrieve(user_papers, owner=uid) → 生成回答,带 [N] 引用。"""
     from deepcoke.vectorstore.retriever import retrieve
     from deepcoke.generation.answer_generator import generate_answer_stream
 
     def stream():
         try:
-            chunks = retrieve(q, top_k=8, where={"owner_user_id": user_id},
+            chunks = retrieve(q, top_k=8, where={"owner_user_id": uid},
                               collection_name=USER_COLLECTION)
         except Exception as e:
             yield f"检索你的文献库失败: {e}"

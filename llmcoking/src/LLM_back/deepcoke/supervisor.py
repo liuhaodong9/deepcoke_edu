@@ -119,5 +119,6 @@ def supervisor_decide(question: str) -> dict:
         return {"agents": valid_agents, "reasoning": reasoning}
 
     except Exception as e:
-        logger.error(f"[supervisor] LLM 决策异常: {e}，fallback to knowledge_qa")
-        return {"agents": ["knowledge_qa"], "reasoning": f"LLM 异常({e})，默认知识问答"}
+        # 降级到知识问答是正常兜底(不是错误):不刷 error 级日志,reasoning 也不暴露异常细节给前端
+        logger.info(f"[supervisor] LLM 路由不可用,降级知识问答: {type(e).__name__}")
+        return {"agents": ["knowledge_qa"], "reasoning": "默认知识问答"}

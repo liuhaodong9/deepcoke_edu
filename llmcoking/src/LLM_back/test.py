@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Depends, HTTPException, Header  # 导入 FastAPI 和 Depends 依赖
+from fastapi import FastAPI, Depends, HTTPException, Header, Request  # 导入 FastAPI 和 Depends 依赖
 from sqlalchemy import create_engine, Column, Integer, String, Text, TIMESTAMP, ForeignKey  # 导入 SQLAlchemy 组件
 from sqlalchemy import text as _sql_text_top  # 用于启动时 ALTER TABLE 加列
 from sqlalchemy.ext.declarative import declarative_base  # 定义数据库模型
@@ -178,6 +178,15 @@ def get_db():
         yield db  # 提供数据库连接
     finally:
         db.close()  # 关闭数据库连接
+
+
+def current_user_id(request: Request) -> str:
+    """从 token(鉴权中间件已设 request.state.user_id)取真实用户,忽略 query 里传的 user_id,
+    防越权(登录 A 传 user_id=B 读写 B 的数据)。关 legacy bypass 后 state.user_id 一定是真实用户。"""
+    uid = getattr(request.state, "user_id", None)
+    if not uid:
+        raise HTTPException(status_code=401, detail="未登录")
+    return uid
 
 def hash_password(password: str) -> str:
     """对密码进行 SHA-256 哈希"""
@@ -537,23 +546,23 @@ class FavoriteBody(BaseModel):
 
 
 @app.get("/favorites/")
-async def list_favorites(user_id: str, db: Session = Depends(get_db)):
-    """列出用户收藏的文献(按收藏时间倒序)。"""
-    rows = (db.query(Favorite).filter(Favorite.user_id == user_id)
+async def list_favorites(uid: str = Depends(current_user_id), db: Session = Depends(get_db)):
+    """列出当前登录用户收藏的文献(按收藏时间倒序)。"""
+    rows = (db.query(Favorite).filter(Favorite.user_id == uid)
             .order_by(Favorite.created_at.desc()).all())
     return [{"paper_id": f.paper_id, "title": f.title, "authors": f.authors,
              "year": f.year} for f in rows]
 
 
 @app.post("/favorites/")
-async def add_favorite(body: FavoriteBody, db: Session = Depends(get_db)):
-    """收藏一篇文献。已收藏则幂等返回。"""
+async def add_favorite(body: FavoriteBody, uid: str = Depends(current_user_id), db: Session = Depends(get_db)):
+    """收藏一篇文献(挂当前登录用户,忽略 body.user_id)。已收藏则幂等返回。"""
     exist = (db.query(Favorite)
-             .filter(Favorite.user_id == body.user_id, Favorite.paper_id == body.paper_id)
+             .filter(Favorite.user_id == uid, Favorite.paper_id == body.paper_id)
              .first())
     if exist:
         return {"status": "exists", "paper_id": body.paper_id}
-    fav = Favorite(user_id=body.user_id, paper_id=body.paper_id,
+    fav = Favorite(user_id=uid, paper_id=body.paper_id,
                    title=(body.title or "")[:500], authors=(body.authors or "")[:500],
                    year=body.year)
     db.add(fav)
@@ -562,10 +571,10 @@ async def add_favorite(body: FavoriteBody, db: Session = Depends(get_db)):
 
 
 @app.delete("/favorites/")
-async def remove_favorite(user_id: str, paper_id: int, db: Session = Depends(get_db)):
-    """取消收藏。"""
+async def remove_favorite(paper_id: int, uid: str = Depends(current_user_id), db: Session = Depends(get_db)):
+    """取消收藏(仅当前登录用户自己的)。"""
     n = (db.query(Favorite)
-         .filter(Favorite.user_id == user_id, Favorite.paper_id == paper_id)
+         .filter(Favorite.user_id == uid, Favorite.paper_id == paper_id)
          .delete(synchronize_session=False))
     db.commit()
     return {"status": "ok", "removed": n}
@@ -582,26 +591,26 @@ class NoteBody(BaseModel):
 
 
 @app.get("/notes/")
-async def get_note(user_id: str, paper_id: int, db: Session = Depends(get_db)):
-    """取某篇笔记(没有返回空)。"""
+async def get_note(paper_id: int, uid: str = Depends(current_user_id), db: Session = Depends(get_db)):
+    """取当前登录用户某篇笔记(没有返回空)。"""
     n = (db.query(PaperNote)
-         .filter(PaperNote.user_id == user_id, PaperNote.paper_id == paper_id).first())
+         .filter(PaperNote.user_id == uid, PaperNote.paper_id == paper_id).first())
     return {"paper_id": paper_id, "content": n.content if n else "", "title": n.title if n else ""}
 
 
 @app.get("/notes/list")
-async def list_notes(user_id: str, db: Session = Depends(get_db)):
-    """列出用户所有笔记(按更新时间倒序)。"""
-    rows = (db.query(PaperNote).filter(PaperNote.user_id == user_id)
+async def list_notes(uid: str = Depends(current_user_id), db: Session = Depends(get_db)):
+    """列出当前登录用户所有笔记(按更新时间倒序)。"""
+    rows = (db.query(PaperNote).filter(PaperNote.user_id == uid)
             .order_by(PaperNote.updated_at.desc()).all())
     return [{"paper_id": r.paper_id, "title": r.title, "content": r.content} for r in rows]
 
 
 @app.post("/notes/")
-async def save_note(body: NoteBody, db: Session = Depends(get_db)):
-    """保存/更新某篇笔记。content 空则删除该笔记。"""
+async def save_note(body: NoteBody, uid: str = Depends(current_user_id), db: Session = Depends(get_db)):
+    """保存/更新当前登录用户某篇笔记(忽略 body.user_id)。content 空则删除。"""
     n = (db.query(PaperNote)
-         .filter(PaperNote.user_id == body.user_id, PaperNote.paper_id == body.paper_id).first())
+         .filter(PaperNote.user_id == uid, PaperNote.paper_id == body.paper_id).first())
     if not (body.content or "").strip():
         if n:
             db.delete(n)
@@ -612,7 +621,7 @@ async def save_note(body: NoteBody, db: Session = Depends(get_db)):
         n.title = (body.title or n.title or "")[:500]
         n.updated_at = datetime.utcnow()
     else:
-        n = PaperNote(user_id=body.user_id, paper_id=body.paper_id,
+        n = PaperNote(user_id=uid, paper_id=body.paper_id,
                       title=(body.title or "")[:500], content=body.content)
         db.add(n)
     db.commit()
