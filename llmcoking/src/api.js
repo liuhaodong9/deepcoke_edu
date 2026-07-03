@@ -18,6 +18,15 @@ export function getToken () {
   }
 }
 
+// 当前登录用户名(全站 user_id 统一走它;未登录返回空串)
+export function currentUser () {
+  try {
+    return window.sessionStorage.getItem('username') || ''
+  } catch (e) {
+    return ''
+  }
+}
+
 export function setToken (token) {
   try {
     if (token) window.sessionStorage.setItem(TOKEN_KEY, token)

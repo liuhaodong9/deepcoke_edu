@@ -27,8 +27,8 @@ from sqlalchemy.orm import Session
 
 # AUTH 配置
 AUTH_TOKEN_TTL_DAYS = int(os.getenv("AUTH_TOKEN_TTL_DAYS", "30"))
-# 兼容期：允许旧固定 token 继续工作；公网上线前设 false
-LEGACY_BYPASS_TOKEN = os.getenv("AUTH_LEGACY_BYPASS", "true").lower() in ("1", "true", "yes")
+# 旧固定 token 兼容开关：默认 false(安全优先);开发调试需要时显式设 AUTH_LEGACY_BYPASS=true
+LEGACY_BYPASS_TOKEN = os.getenv("AUTH_LEGACY_BYPASS", "false").lower() in ("1", "true", "yes")
 LEGACY_TOKEN_VALUE = "I have login"
 
 

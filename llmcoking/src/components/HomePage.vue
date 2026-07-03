@@ -216,7 +216,7 @@
 </template>
 
 <script>
-import { apiFetch } from '../api'
+import { apiFetch, currentUser } from '../api'
 
 export default {
   data () {
@@ -227,7 +227,7 @@ export default {
       folders: [],
       expandedFolderIds: [],
       sessionId: '',
-      userId: 'user123',
+      userId: currentUser(), // 真实登录用户(未登录为空,路由守卫会挡在登录页)
       multiSelectMode: false,
       selectedIds: []
     }

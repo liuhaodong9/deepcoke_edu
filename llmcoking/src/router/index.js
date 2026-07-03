@@ -44,4 +44,16 @@ const router = new VueRouter({
   ]
 })
 
+// 全局路由守卫:未登录(无 token)访问受保护页 → 踢回登录页
+const PUBLIC = new Set(['Login'])
+router.beforeEach((to, from, next) => {
+  let token = ''
+  try { token = window.sessionStorage.getItem('token') || '' } catch (e) { token = '' }
+  if (!token && !PUBLIC.has(to.name)) {
+    next({ name: 'Login' })
+  } else {
+    next()
+  }
+})
+
 export default router

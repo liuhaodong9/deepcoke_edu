@@ -541,7 +541,7 @@ export default {
       this.$message && this.$message.success(`已导出 ${papers.length} 篇引用 (${ext})`)
     },
     _favUser () {
-      return window.sessionStorage.getItem('username') || 'user123'
+      return window.sessionStorage.getItem('username') || ''
     },
     async loadFavorites () {
       // ⑫ 拉取当前用户收藏,填 favIds/favList
@@ -1218,7 +1218,7 @@ export default {
       let sessionToUse = this.sessionId
       if (this.sessionId === 'new') {
         try {
-          const response = await apiFetch('/new_session/?user_id=user123', { method: 'POST' })
+          const response = await apiFetch(`/new_session/?user_id=${encodeURIComponent(this._favUser())}`, { method: 'POST' })
           const data = await response.json()
           this.localSessionId = data.session_id
           this.$emit('update-sessions')
