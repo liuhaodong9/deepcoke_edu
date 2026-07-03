@@ -135,3 +135,19 @@
 
 **优先级:** P0=1-4(+supervisor404降级) P1=5-8(引用原因/去重/类型过滤/事实性) P2=实验条件轻量抽取/GraphRAG联动 P3(暂缓/冻结)=DOI/references结构化/时间线/订阅/作者追踪/Zotero/VLM
 **汇报口径:** "已完成焦化领域文献可信问答闭环;后续=①上线安全与多用户隔离 ②引用可信度与事实性评估 ③焦化实验条件与因果知识抽取"(不列一堆未完成模块)
+
+## ✅ 2026-07-03 收口期完成(P0安全+P1可信+主题分库)
+**最小收口6件全部落地:**
+1. 关鉴权绕过(AUTH_LEGACY_BYPASS 默认false,重启带false;旧token I have login→401)
+2. 真多用户(去user123硬编码;api.currentUser();路由守卫;越权已堵-带A的token传user_id=B返回A自己数据)
+3. 引用原因(证据卡从证据类型派生"为何引用",零LLM)
+4. 去重+类型过滤(doctype加letter/news/会议摘要剔除;_dedup_candidates标题近似去重)
+5. 答案事实性评估(eval_factuality裁判LLM抽结论)
+6. 实验数据标签(_research_type: 实验/建模/工业/表征/综述,来源卡徽章)
+主题分库:assign_topics 226篇打6类主题(carbon_structure/coal_blending/pyrolysis/characterization/coke_quality/plastic_layer)+软路由(detect_topic同主题+0.012加权,不排除护召回)+主题徽章
+
+## 三大答辩硬数字(2026-07-03)
+- **论文选取召回率 93.3%**(30题gold)
+- **答案事实正确率 90.0% / 证据支持率 97.5% / 错误率 0.0%**(10题80结论,裁判LLM)
+- **知识图谱:226篇自动抽 1326条领域因果关系**(镜质组—提高→焦油产率等),支撑多跳推理
+汇报口径:"已完成焦化领域文献可信问答闭环;后续=①上线安全与多用户隔离 ②引用可信度与事实性评估 ③焦化实验条件与因果知识抽取"
