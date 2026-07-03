@@ -311,6 +311,10 @@
           <span class="ev-k">证据类型</span>
           <span class="ev-v">{{ evidenceCard.v.evidence_type || '正文' }}</span>
         </div>
+        <div v-if="evidenceCard.v" class="ev-row">
+          <span class="ev-k">为何引用</span>
+          <span class="ev-v">{{ citeReason(evidenceCard.v.evidence_type) }}</span>
+        </div>
         <div v-if="evidenceCard.v && evidenceCard.v.page" class="ev-row">
           <span class="ev-k">页码</span>
           <span class="ev-v">第 {{ evidenceCard.v.page }} 页</span>
@@ -482,6 +486,16 @@ export default {
         .filter(p => p && p.cited !== false)
         .slice()
         .sort((a, b) => (a.ref_num || 999) - (b.ref_num || 999))
+    },
+    citeReason (evType) {
+      // ③ 引用原因:从证据类型派生"为何引用"(不额外调 LLM)
+      return {
+        实验结果: '提供该结论的直接实验证据',
+        综述结论: '提供综述性背景或机制归纳',
+        图注: '提供图表/趋势数据支持',
+        表格: '提供定量数据支持',
+        正文: '提供相关论述与背景支持'
+      }[evType] || '提供相关论述支持'
     },
     topicLabel (t) {
       return {
