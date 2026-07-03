@@ -846,6 +846,46 @@ async def get_chunk_full(chunk_id: str):
     }
 
 
+# ─── 研究脉络时间线(按年份聚合主题+代表论文)──────────────────
+@app.get("/timeline")
+async def research_timeline():
+    """研究脉络时间线:每年 × 各主题的论文数 + 代表作(标题最长的一篇)。公开只读。"""
+    from deepcoke import config as _c
+    db = sqlite3.connect(str(_c.DATA_DIR / "papers.db"))
+    try:
+        cols = [r[1] for r in db.execute("PRAGMA table_info(papers)").fetchall()]
+        has_topic = "topic" in cols
+        sel = "year, title" + (", topic" if has_topic else "")
+        rows = db.execute(
+            f"SELECT {sel} FROM papers WHERE year IS NOT NULL AND year > 1980 ORDER BY year"
+        ).fetchall()
+    except Exception as e:
+        db.close()
+        return {"years": [], "error": str(e)}
+    db.close()
+
+    # 聚合: year -> {topic -> {count, rep_title}}
+    agg = {}
+    total_by_year = {}
+    for r in rows:
+        yr = int(r[0])
+        title = r[1] or ""
+        topic = (r[2] if has_topic and len(r) > 2 else "") or "other"
+        total_by_year[yr] = total_by_year.get(yr, 0) + 1
+        agg.setdefault(yr, {}).setdefault(topic, {"count": 0, "rep": ""})
+        cell = agg[yr][topic]
+        cell["count"] += 1
+        if len(title) > len(cell["rep"]):
+            cell["rep"] = title[:80]
+
+    years = []
+    for yr in sorted(agg.keys()):
+        topics = [{"topic": t, "count": c["count"], "rep": c["rep"]}
+                  for t, c in sorted(agg[yr].items(), key=lambda x: -x[1]["count"])]
+        years.append({"year": yr, "total": total_by_year[yr], "topics": topics})
+    return {"years": years, "has_topic": has_topic}
+
+
 # ─── 知识图谱子图(给前端 vis-network 渲染)──────────────────────
 @app.get("/papers/{paper_id}/similar")
 async def papers_similar(paper_id: int, k: int = 8):

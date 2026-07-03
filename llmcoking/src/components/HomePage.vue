@@ -177,6 +177,14 @@
                         </svg>
                         <span>知识库管理</span>
                     </button>
+                    <button class="sidebar-bottom-btn" @click="openTimeline" title="研究脉络:按年份看主题演变">
+                        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2">
+                            <line x1="3" y1="12" x2="21" y2="12"/>
+                            <circle cx="7" cy="12" r="2"/>
+                            <circle cx="14" cy="12" r="2"/>
+                        </svg>
+                        <span>研究脉络</span>
+                    </button>
                     <button class="sidebar-bottom-btn" @click="goLanding">
                         <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2">
                             <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>
@@ -212,6 +220,28 @@
             </div>
             <router-view :sessionId="sessionId" :isCollapese="isCollapese" @update-sessions="fetchChatSessions"></router-view>
         </el-main>
+
+        <!-- 研究脉络时间线弹窗 -->
+        <div v-if="showTimeline" class="tl-mask" @click.self="showTimeline = false">
+            <div class="tl-panel">
+                <div class="tl-head">
+                    <span>📈 研究脉络 — 按年份看主题演变</span>
+                    <span class="tl-close" @click="showTimeline = false">✕</span>
+                </div>
+                <div v-if="!timelineData.length" class="tl-empty">加载中…</div>
+                <div v-else class="tl-body">
+                    <div v-for="y in timelineData" :key="y.year" class="tl-row">
+                        <div class="tl-year">{{ y.year }}<span class="tl-total">{{ y.total }}篇</span></div>
+                        <div class="tl-topics">
+                            <div v-for="t in y.topics" :key="t.topic" class="tl-topic">
+                                <span class="tl-topic-name">{{ timelineTopicLabel(t.topic) }} ×{{ t.count }}</span>
+                                <span class="tl-topic-rep" :title="t.rep">{{ t.rep }}</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
     </el-container>
 </template>
 
@@ -228,6 +258,8 @@ export default {
       expandedFolderIds: [],
       sessionId: '',
       userId: currentUser(), // 真实登录用户(未登录为空,路由守卫会挡在登录页)
+      showTimeline: false,
+      timelineData: [],
       multiSelectMode: false,
       selectedIds: []
     }
@@ -249,6 +281,28 @@ export default {
   methods: {
     toggleCollapse () {
       this.isCollapese = !this.isCollapese
+    },
+    async openTimeline () {
+      this.showTimeline = true
+      if (this.timelineData.length) return
+      try {
+        const r = await apiFetch('/timeline')
+        if (r.ok) {
+          const d = await r.json()
+          this.timelineData = d.years || []
+        }
+      } catch (e) { /* 静默 */ }
+    },
+    timelineTopicLabel (t) {
+      return {
+        carbon_structure: '碳结构',
+        coal_blending: '配煤',
+        pyrolysis: '热解',
+        characterization: '表征',
+        coke_quality: '焦炭质量',
+        plastic_layer: '胶质层',
+        other: '其他'
+      }[t] || t
     },
     goLanding () {
       this.$router.push('/landing')
@@ -1061,4 +1115,89 @@ export default {
   border-color: rgba(20, 158, 250, 0.25);
 }
 
+/* 研究脉络时间线弹窗 */
+.tl-mask {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  z-index: 3000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.tl-panel {
+  width: 780px;
+  max-width: 92vw;
+  max-height: 82vh;
+  background: #fff;
+  border-radius: 12px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.tl-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 14px 18px;
+  font-weight: 600;
+  color: #1a3556;
+  border-bottom: 1px solid #eef2f7;
+}
+.tl-close {
+  cursor: pointer;
+  color: #8a96a6;
+}
+.tl-empty {
+  padding: 40px;
+  text-align: center;
+  color: #8a96a6;
+}
+.tl-body {
+  overflow-y: auto;
+  padding: 8px 18px 18px;
+}
+.tl-row {
+  display: flex;
+  gap: 14px;
+  padding: 10px 0;
+  border-bottom: 1px solid #f2f5f9;
+}
+.tl-year {
+  flex-shrink: 0;
+  width: 66px;
+  font-weight: 700;
+  color: #2f6fb3;
+  font-size: 15px;
+}
+.tl-total {
+  display: block;
+  font-size: 11px;
+  font-weight: 400;
+  color: #9aa7b4;
+}
+.tl-topics {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.tl-topic {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  font-size: 12.5px;
+}
+.tl-topic-name {
+  flex-shrink: 0;
+  color: #5a7d5a;
+  font-weight: 600;
+  min-width: 96px;
+}
+.tl-topic-rep {
+  color: #6b7c93;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 </style>
