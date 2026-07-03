@@ -253,11 +253,22 @@
                         <div v-for="a in authorsData" :key="a.name" class="tl-row">
                             <div class="tl-year tl-author-count">{{ a.count }}<span class="tl-total">篇</span></div>
                             <div class="tl-topics">
-                                <div class="tl-topic">
-                                    <span class="tl-topic-name">{{ a.name }}</span>
-                                    <span class="tl-topic-rep">主研：{{ timelineTopicLabel(a.top_topic) }}</span>
+                                <div class="au-name">{{ a.name }}</div>
+                                <div class="au-bar">
+                                    <span
+                                      v-for="t in a.topics"
+                                      :key="t.topic"
+                                      class="au-seg"
+                                      :class="'topic-' + t.topic"
+                                      :style="{ width: t.pct + '%' }"
+                                      :title="timelineTopicLabel(t.topic) + ' ' + t.count + '篇 (' + t.pct + '%)'"
+                                    ></span>
                                 </div>
-                                <div class="tl-topic-rep" :title="(a.papers || []).join(' / ')">{{ (a.papers || [])[0] }}</div>
+                                <div class="au-legend">
+                                    <span v-for="t in a.topics" :key="t.topic" class="au-legend-item">
+                                        <i class="au-dot" :class="'topic-' + t.topic"></i>{{ timelineTopicLabel(t.topic) }} {{ t.pct }}%
+                                    </span>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -1200,6 +1211,48 @@ export default {
 .tl-author-count {
   color: #5a7d5a;
 }
+.au-name {
+  font-weight: 600;
+  color: #1a3556;
+  font-size: 13px;
+  margin-bottom: 5px;
+}
+.au-bar {
+  display: flex;
+  height: 10px;
+  border-radius: 5px;
+  overflow: hidden;
+  background: #eef2f7;
+}
+.au-seg {
+  height: 100%;
+}
+.au-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 5px;
+  font-size: 11px;
+  color: #6b7c93;
+}
+.au-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+.au-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  display: inline-block;
+}
+.topic-carbon_structure { background: #4a90e2; }
+.topic-coal_blending { background: #e2984a; }
+.topic-pyrolysis { background: #d15a5a; }
+.topic-characterization { background: #7b68ee; }
+.topic-coke_quality { background: #4aae8c; }
+.topic-plastic_layer { background: #c77fb5; }
+.topic-other { background: #9aa7b4; }
 .tl-empty {
   padding: 40px;
   text-align: center;

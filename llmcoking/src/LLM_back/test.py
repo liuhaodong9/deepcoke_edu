@@ -924,12 +924,18 @@ async def top_authors(limit: int = 30):
                 d["papers"].append(title[:70])
 
     ranked = sorted(agg.items(), key=lambda x: -x[1]["count"])[:limit]
-    out = [{
-        "name": name,
-        "count": d["count"],
-        "top_topic": max(d["topics"].items(), key=lambda x: x[1])[0] if d["topics"] else "",
-        "papers": d["papers"],
-    } for name, d in ranked if d["count"] >= 2]
+    out = []
+    for name, d in ranked:
+        if d["count"] < 2:
+            continue
+        # 主题占比分布(按篇数降序,含百分比)
+        topics = [{"topic": t, "count": c, "pct": round(c * 100 / d["count"])}
+                  for t, c in sorted(d["topics"].items(), key=lambda x: -x[1])]
+        out.append({
+            "name": name,
+            "count": d["count"],
+            "topics": topics,
+        })
     return {"authors": out, "has_topic": has_topic}
 
 
