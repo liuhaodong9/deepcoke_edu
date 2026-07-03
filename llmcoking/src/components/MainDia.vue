@@ -96,6 +96,7 @@
                     <span v-if="p.year">{{ p.year }}</span>
                     <span v-if="p.journal" class="litqa-journal">{{ p.journal }}</span>
                     <span v-if="p.category" class="litqa-category">{{ p.category }}</span>
+                    <span v-if="p.ref_count" class="litqa-refcount">参考 {{ p.ref_count }} 篇</span>
                   </div>
                   <div v-if="p.exp_coal || p.exp_methods || p.exp_perf" class="litqa-exp">
                     <span v-if="p.exp_coal" class="litqa-exp-item">🪨 {{ p.exp_coal }}</span>
@@ -1711,6 +1712,9 @@ export default {
 }
 .ev-doi-none {
   color: #9aa7b4;
+}
+.litqa-refcount {
+  color: #8a96a6;
 }
 .litqa-doctype.dt-research {
   background: #e7f3ea;

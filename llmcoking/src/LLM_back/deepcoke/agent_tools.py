@@ -173,6 +173,7 @@ def _get_paper_meta(paper_id: int) -> dict:
 
     title = authors = category = keywords = topic = ""
     exp_methods = exp_coal = exp_perf = doi = ""
+    ref_count = 0
     year = 0
     abstract_chunks: list[tuple[int, str]] = []
 
@@ -197,6 +198,8 @@ def _get_paper_meta(paper_id: int) -> dict:
             exp_perf = meta.get("exp_perf", "")
         if not doi and meta.get("doi"):
             doi = meta.get("doi", "")
+        if not ref_count and meta.get("ref_count"):
+            ref_count = meta.get("ref_count", 0)
         sec = (meta.get("section") or "").lower()
         if "abstract" in sec or "summary" in sec:
             abstract_chunks.append((meta.get("chunk_index", 0), raw["documents"][i]))
@@ -216,6 +219,7 @@ def _get_paper_meta(paper_id: int) -> dict:
         "exp_coal": exp_coal,
         "exp_perf": exp_perf,
         "doi": doi,
+        "ref_count": ref_count,
         "abstract": abstract,
         "total_chunks": len(raw["ids"]),
     }

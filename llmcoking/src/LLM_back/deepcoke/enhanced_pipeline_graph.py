@@ -397,6 +397,7 @@ def node_fast_summary_retrieve(state: EnhancedPipelineState) -> dict:
             "exp_coal": meta.get("exp_coal", "") or "",
             "exp_perf": meta.get("exp_perf", "") or "",
             "doi": meta.get("doi", "") or "",
+            "ref_count": meta.get("ref_count", 0) or 0,
             "score": float(rscore),
             "summary_type": summary_type_by_pid.get(pid, ""),
         })
@@ -467,6 +468,7 @@ def node_fast_summary_retrieve(state: EnhancedPipelineState) -> dict:
             "exp_coal": p.get("exp_coal", ""),
             "exp_perf": p.get("exp_perf", ""),
             "doi": p.get("doi", ""),
+            "ref_count": p.get("ref_count", 0),
         }
         for p in packed_papers
     ]
