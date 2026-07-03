@@ -83,6 +83,7 @@
                     <span v-if="p.ref_num" class="litqa-paper-ref">[{{ p.ref_num }}]</span>
                     <span class="litqa-doctype" :class="'dt-' + (p.doctype || 'research')">{{ doctypeLabel(p.doctype) }}</span>
                     <span v-if="p.topic" class="litqa-topic">{{ topicLabel(p.topic) }}</span>
+                    <span v-if="p.research_type" class="litqa-rtype">{{ rtypeLabel(p.research_type) }}</span>
                     <span class="litqa-paper-title">{{ p.title || ('Paper ' + p.paper_id) }}</span>
                     <span
                       class="litqa-fav"
@@ -496,6 +497,15 @@ export default {
         表格: '提供定量数据支持',
         正文: '提供相关论述与背景支持'
       }[evType] || '提供相关论述支持'
+    },
+    rtypeLabel (rt) {
+      return {
+        experimental: '实验',
+        modeling: '建模',
+        industrial: '工业',
+        method: '表征',
+        review: '综述'
+      }[rt] || ''
     },
     topicLabel (t) {
       return {
@@ -1651,6 +1661,17 @@ export default {
   white-space: nowrap;
   background: #fef3e0;
   color: #b5711a;
+}
+.litqa-rtype {
+  flex-shrink: 0;
+  font-size: 10.5px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 3px;
+  line-height: 1.5;
+  white-space: nowrap;
+  background: #e8f0e8;
+  color: #5a7d5a;
 }
 .litqa-doctype.dt-research {
   background: #e7f3ea;

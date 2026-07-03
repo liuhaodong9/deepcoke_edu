@@ -116,6 +116,35 @@ def _classify_doctype(title: str) -> str:
 _NONEVIDENCE_TYPES = ("corrigendum", "editorial", "letter", "news", "abstract")
 
 
+def _research_type(title: str, abstract: str, doctype: str = "") -> str:
+    """⑥ 研究方法类型(垂直领域,给用户区分证据性质):
+    review / experimental / modeling / industrial / method / other。基于标题+摘要信号词。"""
+    if doctype in ("review",):
+        return "review"
+    t = ((title or "") + " " + (abstract or "")).lower()
+    # 建模/模拟
+    if re.search(r"\b(model|modell?ing|simulation|dft|reaxff|molecular dynamic|kinetic model|ann|machine learning|neural network|predict)\b", t):
+        modeling = True
+    else:
+        modeling = False
+    # 工业/中试
+    if re.search(r"\b(industrial|pilot[- ]scale|commercial|plant|blast furnace|coke oven battery|full[- ]scale)\b", t):
+        return "industrial"
+    # 表征方法学
+    if re.search(r"\b(xrd|raman|hrtem|tem|sem|ftir|nmr|xps|tg-ms|saxs|waxs|spectroscop|characteriz)\b", t):
+        method = True
+    else:
+        method = False
+    # 实验信号(材料方法/实验条件)
+    if re.search(r"\b(experiment|materials and methods|sample preparation|heating rate|temperature program|carboniz|pyrolysis experiment|were prepared|was measured)\b", t):
+        return "experimental"
+    if modeling:
+        return "modeling"
+    if method:
+        return "method"
+    return "experimental"   # 焦化文献默认实验类
+
+
 def _title_key(title: str) -> str:
     """标题归一化指纹:去标点/小写/取实词,用于近似去重(预印本 vs 正式版、标题微差)。"""
     t = re.sub(r"[^a-z0-9一-鿿 ]", " ", (title or "").lower())
@@ -427,6 +456,9 @@ def node_fast_summary_retrieve(state: EnhancedPipelineState) -> dict:
             "summary_type": p.get("summary_type", ""),
             "doctype": _classify_doctype(p["title"]),
             "topic": p.get("topic", ""),
+            "research_type": _research_type(
+                p["title"], (paper_meta_cache.get(p["paper_id"], {}) or {}).get("abstract", ""),
+                _classify_doctype(p["title"])),
         }
         for p in packed_papers
     ]
