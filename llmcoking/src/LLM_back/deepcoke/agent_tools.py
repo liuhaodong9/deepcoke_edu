@@ -172,7 +172,7 @@ def _get_paper_meta(paper_id: int) -> dict:
         return {"paper_id": paper_id, "error": "not found"}
 
     title = authors = category = keywords = topic = ""
-    exp_methods = exp_coal = exp_perf = ""
+    exp_methods = exp_coal = exp_perf = doi = ""
     year = 0
     abstract_chunks: list[tuple[int, str]] = []
 
@@ -195,6 +195,8 @@ def _get_paper_meta(paper_id: int) -> dict:
             exp_coal = meta.get("exp_coal", "")
         if not exp_perf and meta.get("exp_perf"):
             exp_perf = meta.get("exp_perf", "")
+        if not doi and meta.get("doi"):
+            doi = meta.get("doi", "")
         sec = (meta.get("section") or "").lower()
         if "abstract" in sec or "summary" in sec:
             abstract_chunks.append((meta.get("chunk_index", 0), raw["documents"][i]))
@@ -213,6 +215,7 @@ def _get_paper_meta(paper_id: int) -> dict:
         "exp_methods": exp_methods,
         "exp_coal": exp_coal,
         "exp_perf": exp_perf,
+        "doi": doi,
         "abstract": abstract,
         "total_chunks": len(raw["ids"]),
     }

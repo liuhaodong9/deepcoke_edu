@@ -313,6 +313,13 @@
           <span class="ev-k">来源</span>
           <span class="ev-v">{{ evidenceCard.paper.title || ('Paper ' + evidenceCard.paper.paper_id) }}<em v-if="evidenceCard.paper.year"> ({{ evidenceCard.paper.year }})</em></span>
         </div>
+        <div class="ev-row">
+          <span class="ev-k">DOI</span>
+          <span class="ev-v">
+            <a v-if="evidenceCard.paper.doi" :href="'https://doi.org/' + evidenceCard.paper.doi" target="_blank" class="ev-doi">{{ evidenceCard.paper.doi }}</a>
+            <span v-else class="ev-doi-none">未识别</span>
+          </span>
+        </div>
         <div v-if="evidenceCard.v" class="ev-row">
           <span class="ev-k">证据类型</span>
           <span class="ev-v">{{ evidenceCard.v.evidence_type || '正文' }}</span>
@@ -553,17 +560,20 @@ export default {
         const title = (p.title || `Paper ${p.paper_id}`).replace(/[{}]/g, '')
         const authors = p.authors || ''
         const year = p.year || ''
+        const doi = p.doi || ''
         if (fmt === 'bibtex') {
           text += `@article{${this._citationKey(p, i)},\n`
           text += `  title = {${title}},\n`
           if (authors) text += `  author = {${authors}},\n`
           if (year) text += `  year = {${year}},\n`
+          if (doi) text += `  doi = {${doi}},\n`
           text += '}\n\n'
         } else {
           text += 'TY  - JOUR\n'
           text += `TI  - ${title}\n`
           authors.split(/[,;]/).map(a => a.trim()).filter(Boolean).forEach(a => { text += `AU  - ${a}\n` })
           if (year) text += `PY  - ${year}\n`
+          if (doi) text += `DO  - ${doi}\n`
           text += 'ER  - \n\n'
         }
       })
@@ -1690,6 +1700,17 @@ export default {
   background: #f4f7fb;
   border-radius: 3px;
   padding: 1px 6px;
+}
+.ev-doi {
+  color: #2f6fb3;
+  text-decoration: none;
+  word-break: break-all;
+}
+.ev-doi:hover {
+  text-decoration: underline;
+}
+.ev-doi-none {
+  color: #9aa7b4;
 }
 .litqa-doctype.dt-research {
   background: #e7f3ea;
