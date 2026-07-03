@@ -23,6 +23,8 @@ TERM_FIX = [
     ("壳质体", "壳质组"),
 
     # 胶质层 / 热塑性区间(顺序敏感:长 key 先匹配)
+    ("热塑性层", "胶质层"),
+    ("塑料层", "胶质层"),
     ("塑性区域", "热塑性区间"),
     ("塑性层", "胶质层"),
     ("塑性区", "胶质层"),
@@ -47,11 +49,25 @@ TERM_FIX = [
 ]
 
 
+# 保护词:这些正确术语含"塑性区/塑性层"子串,替换前先占位、替换后还原,避免被打碎
+_PROTECT = ["热塑性区间", "热塑性性能", "热塑性行为"]
+
+
 def fix_terms(text: str) -> str:
     """对 LLM 输出做术语规范化兜底替换。piece-level 或 full-text 均可调用。"""
     if not text:
         return text
+    # 先保护含子串的正确词
+    holders = {}
+    for i, w in enumerate(_PROTECT):
+        if w in text:
+            h = f"\x00P{i}\x00"
+            holders[h] = w
+            text = text.replace(w, h)
     for wrong, right in TERM_FIX:
         if wrong in text:
             text = text.replace(wrong, right)
+    # 还原
+    for h, w in holders.items():
+        text = text.replace(h, w)
     return text
