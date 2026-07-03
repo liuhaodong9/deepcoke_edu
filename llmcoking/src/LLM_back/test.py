@@ -11,6 +11,7 @@ from openai import OpenAI  # DeepSeek 兼容 OpenAI API
 from starlette.responses import StreamingResponse
 import asyncio
 import os
+import sqlite3
 import traceback
 import logging
 from pydantic import BaseModel
@@ -868,7 +869,10 @@ async def research_timeline():
     agg = {}
     total_by_year = {}
     for r in rows:
-        yr = int(r[0])
+        try:
+            yr = int(r[0])          # year 脏数据(空/非数字)直接跳过,别让整个接口崩
+        except (TypeError, ValueError):
+            continue
         title = r[1] or ""
         topic = (r[2] if has_topic and len(r) > 2 else "") or "other"
         total_by_year[yr] = total_by_year.get(yr, 0) + 1
